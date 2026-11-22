@@ -47,8 +47,8 @@ Command: `cd android && ./gradlew assembleDebug --max-workers=2`
 > Task :app:createDebugApkListingFileRedirect UP-TO-DATE
 > Task :app:assembleDebug
 
-BUILD SUCCESSFUL in 8s
-36 actionable tasks: 7 executed, 29 up-to-date
+BUILD SUCCESSFUL in 1m 2s
+36 actionable tasks: 4 executed, 32 up-to-date
 ```
 
 APK: `/home/ubuntu/repos/winport/android/app/build/outputs/apk/debug/app-debug.apk`
@@ -78,4 +78,30 @@ WaitTime: 6159
 Complete
 ```
 
-Library screen visually inspected: `docs/screenshot.png` (1080 × 2400). The Rust JNI initialization created `files/core/state.json` in the app sandbox. Other screens and SAF workflows were compiled but were not manually exercised; Windows game execution was not tested and is not expected to work with the current direct-spawn backend on Android 10+.
+The original portrait Library capture is retained as `docs/screenshot.png`. The console redesign replaces that UI; current evidence is below.
+
+## Landscape console redesign
+
+The Rust core, `NativeCore.kt` and `CoreViewModel.kt` were preserved. `cargo test --locked` still reports **8 passed, 0 failed**. The APK assemble output above is from the final redesigned UI build; both native ABIs remain packaged.
+
+The final APK installed successfully on the same API 35 emulator, configured to 2400 × 1080 landscape at 320 dpi. The emulator initially showed a transient “System UI isn't responding” dialog during cold startup; after the emulator settled, the launcher rendered and responded to navigation. The invalid capture was replaced, not used as evidence. SwiftShader is software-rendered and visibly slow here; these captures do not establish physical-device animation performance.
+
+Fresh Rust state contained no games, containers or components, only the three performance presets. After capturing the empty state, an external, temporary ADB Java helper invoked the real `NativeCore.call` JNI entry point as the app UID:
+
+- Imported a flattened copy of upstream Kron4ek Wine-Builds 10.0 amd64 using `installComponent`.
+- Created the real `Windows games` prefix with `addContainer`.
+- Copied the downloaded OpenTTD 14.1 and Luanti 5.11.0 Windows game trees into that prefix.
+- Registered both actual EXEs with `addGame`; Rust generated the game IDs.
+
+The helper, archives, executables and emulator state are outside the repository. No game or runtime defaults were added. Only generated-gradient artwork is shown. Box64, DXVK and rootfs remain absent; these are launcher checks, not successful Windows execution or Wine compatibility tests.
+
+Current screenshots:
+
+- `docs/home-empty.png`
+- `docs/home-two-games.png`
+- `docs/game-options.png`
+- `docs/control-center.png`
+- `docs/settings.png`
+- `docs/settings-profiles.png`
+
+Touch, ADB-injected D-pad/controller keys and the displayed focus indicators were used for the requested screens. SAF import/artwork flows are wired to the retained ViewModel and Android document picker but were not exercised end-to-end. No physical gamepad or Android ARM64 device was available.

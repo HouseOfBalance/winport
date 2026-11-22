@@ -1,17 +1,19 @@
 # Winport
 
-A small, buildable **Winlator-style launcher scaffold**: Kotlin / Jetpack Compose on Android, with a Rust core behind a JSON JNI boundary. Dark Material 3 UI, local game library, Wine prefix containers, editable performance presets and user-imported runtime components.
+A small, buildable **Winlator-style launcher scaffold**: Kotlin / Jetpack Compose on Android, with a Rust core behind a JSON JNI boundary. Landscape, immersive console-style UI, local game library, Wine prefix containers, editable performance presets and user-imported runtime components.
 
-<img src="docs/screenshot.png" alt="Winport Library running on an Android 15 emulator" width="320" />
+<img src="docs/home-two-games.png" alt="Winport console home running in landscape on an Android 15 emulator" width="960" />
 
 **This is not yet a working Windows runtime on modern Android.** The launcher builds and packages a real Rust native library; it does not bundle or silently download Box64, Wine, DXVK or a Linux rootfs. No games are included.
 
 ## Architecture
 
 ```
-android/app/.../MainActivity.kt     Library grid/list + bottom navigation
-             Editors.kt           Game and performance editors
-             ManagementScreens.kt Containers, Profiles, Components
+android/app/.../ConsoleActivity.kt Immersive activity, home, game hub, library, routing
+             ConsoleKit.kt        Original vector icons, focus motion, artwork, ambient backdrop
+             ConsoleOverlays.kt   Options menu, Control Center, confirmation/error overlays
+             ConsoleForms.kt      Fullscreen game form and profile controls
+             ConsoleSettings.kt   Settings list and two-pane management pages
              CoreViewModel.kt     Async JNI calls and Android SAF stream copying
              NativeCore.kt        Serializable view models + JSON bridge
                             ↓ JNI: NativeCore.call(method, JSON) → JSON
@@ -25,7 +27,7 @@ rust/src/lib.rs                   Core, validated CRUD, process ownership
          jni.rs                   Mutex-protected core, exception translation
 ```
 
-Domain state, validation, archive extraction, presets, launch environment/argv and process control live in Rust. Kotlin owns UI presentation and the Android-only SAF file transport. Disk-heavy work and JNI calls run off the main thread. Persistence lives in `files/core/state.json`; prefixes and components are siblings beneath that directory. There is no network permission or backend.
+Domain state, validation, archive extraction, presets, launch environment/argv and process control live in Rust. Kotlin owns UI presentation and the Android-only SAF file transport. Disk-heavy work and JNI calls run off the main thread. Persistence lives in `files/core/state.json`; prefixes and components are siblings beneath that directory. Artwork URI permissions and last launch-attempt timestamps are presentation-only Android preferences. There is no network permission or backend.
 
 ## Build (Linux, JDK 17)
 
@@ -64,14 +66,35 @@ The APK is `android/app/build/outputs/apk/debug/app-debug.apk`. Use environment 
 
 ## Use
 
-1. **Components:** choose a kind and import a trusted `.tar.xz`, `.tar.gz` or `.zip` through the Android file picker. The content URI is copied to a private temporary cache directory, extracted by Rust into staging, then renamed into place. Failed imports remove staging and leave the registry unchanged.
-2. **Containers:** select an imported Wine version and create a named prefix. Creating a container makes the directory, **not a fully initialized Wine installation**.
-3. **Library → +:** select the container and profile. Choose a `.exe` with SAF (extension checked after selection because providers do not agree on an EXE MIME type), or enter an existing container-relative path. An imported EXE is copied to `drive_c/imports/<uuid>/filename.exe`. Importing an EXE alone does **not** copy its adjacent DLLs/assets; place a complete game tree in the prefix separately.
-4. Extra arguments are one argument per line. Paths and arguments containing spaces stay individual argv entries; no shell is involved. Save and reopen a game to preview the saved launch plan, environment and CPU affinity.
-5. Profiles expose Box64 big-block / strong-memory / safe-flags controls, DXVK HUD, FPS limit (0 = unlimited), resolution and comma-separated CPU cores (blank = OS default). They are editable; presets are created only on first initialization.
+1. **Settings → Components:** choose a kind and import a trusted `.tar.xz`, `.tar.gz` or `.zip` through the Android file picker. The content URI is copied to a private temporary cache directory, extracted by Rust into staging, then renamed into place. Failed imports remove staging and leave the registry unchanged.
+2. **Settings → Containers:** select an imported Wine version and create a named prefix. Creating a container makes the directory, **not a fully initialized Wine installation**.
+3. **Home → Add game:** select the container and profile in the fullscreen form. Choose a `.exe` with SAF (extension checked after selection because providers do not agree on an EXE MIME type), or enter an existing container-relative path. An imported EXE is copied to `drive_c/imports/<uuid>/filename.exe`. Importing an EXE alone does **not** copy its adjacent DLLs/assets; place a complete game tree in the prefix separately. Optionally choose artwork through SAF; otherwise an original gradient is generated from the game name.
+4. Extra arguments are one argument per line. Paths and arguments containing spaces stay individual argv entries; no shell is involved. Select the saved game, then its **Launch command** activity card to preview the environment, argv and CPU affinity. The round **…** button opens Edit game, Change container, Change profile and Remove; changes use the same fullscreen form.
+5. **Settings → Performance Profiles** exposes Box64 big-block / strong-memory / safe-flags controls, DXVK HUD, FPS limit (0 = unlimited), resolution and comma-separated CPU cores (blank = OS default). Profiles are editable; presets are created only on first initialization.
 6. Launch reports a PID if spawning succeeds; Stop only accepts a process owned by the current core session, kills its process group and reaps it. Running indicators are session-local and are cleared with Stop; they are not a live process monitor.
 
 Container and component deletion is permanent and asks for confirmation. A Wine component referenced by a container, a container referenced by a game, or a profile referenced by a game cannot be removed. Removing a game only removes its library metadata, not its files.
+
+### Console navigation
+
+Use touch or a D-pad: focus moves between tiles, tabs and controls; **A / Enter / D-pad center** selects and **B / Back / Escape** returns. Select a game tile to move to its Play button. **Start / Menu**, the avatar or the bottom Control Center button opens the sliding bottom overlay. Swipe upward from the bottom edge to open it as well. Power → Exit app closes the launcher. Sound controls Android media volume; Network and Accessibility link to Android settings. Media intentionally starts empty.
+
+The UI uses Android's system sans font, original Canvas-drawn icons and generated artwork. No Sony logos, controller-button artwork, fonts, sounds or images are included. This independent project is not affiliated with Sony Interactive Entertainment.
+
+## Screenshots
+
+Captured on an Android 15 / API 35 x86_64 emulator, **2400 × 1080, landscape, 320 dpi**, with system bars hidden:
+
+| State | Screenshot |
+| --- | --- |
+| Fresh library / empty home | [docs/home-empty.png](docs/home-empty.png) |
+| Home with two runtime-added games | [docs/home-two-games.png](docs/home-two-games.png) |
+| Focused game hub and options menu | [docs/game-options.png](docs/game-options.png) |
+| Control Center | [docs/control-center.png](docs/control-center.png) |
+| Settings | [docs/settings.png](docs/settings.png) |
+| Two-pane performance profile detail | [docs/settings-profiles.png](docs/settings-profiles.png) |
+
+OpenTTD 14.1 and Luanti 5.11.0 were downloaded externally and added **only to the emulator's private runtime state using ADB and the real JNI CRUD API**, with their actual Windows EXEs and game directories copied into a container. Wine 10.0 was imported from a flattened upstream archive to create that container. No games, artwork, runtime binaries or seeded game records are bundled or committed. The first screenshot was taken before these imports. These screenshots verify the launcher, not game execution; Box64, DXVK, rootfs and the Android execution backend remain unprovisioned.
 
 ### Archive layout and selection
 
@@ -117,4 +140,4 @@ Model fields are defined in `rust/src/{library,profiles,containers,components}.r
 
 ## Verification
 
-Rust tests exercise launch argv/environment, empty arguments, all four missing-component errors, invalid settings and traversal paths, persistence round-trip and corrupt state, staged ZIP import, unsafe ZIP rejection, container directories/deletion guards and PID ownership. `docs/verification.md` records the actual build results for this checkout. An emulator screenshot, if captured, is `docs/screenshot.png`; it verifies the launcher surface, not Windows execution.
+Rust tests exercise launch argv/environment, empty arguments, all four missing-component errors, invalid settings and traversal paths, persistence round-trip and corrupt state, staged ZIP import, unsafe ZIP rejection, container directories/deletion guards and PID ownership. `docs/verification.md` records build and emulator verification. See the screenshots above for the redesigned launcher; none verifies Windows execution.
