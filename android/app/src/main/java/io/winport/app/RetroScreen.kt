@@ -58,12 +58,19 @@ object RetroNative {
     external fun input(port: Int, id: Int, value: Short)
 }
 
+internal object RetroButtons {
+    const val CROSS = 0
+    const val CIRCLE = 8
+    const val SQUARE = 1
+    const val TRIANGLE = 9
+}
+
 object RetroInput {
     @Volatile var active = false
     @Volatile var paused = false
     private val buttons = Array(3) { BooleanArray(16) }
-    private val keys = mapOf(KeyEvent.KEYCODE_BUTTON_A to 8, KeyEvent.KEYCODE_BUTTON_B to 0,
-        KeyEvent.KEYCODE_BUTTON_X to 9, KeyEvent.KEYCODE_BUTTON_Y to 1,
+    internal val keys = mapOf(KeyEvent.KEYCODE_BUTTON_A to RetroButtons.CROSS, KeyEvent.KEYCODE_BUTTON_B to RetroButtons.CIRCLE,
+        KeyEvent.KEYCODE_BUTTON_X to RetroButtons.SQUARE, KeyEvent.KEYCODE_BUTTON_Y to RetroButtons.TRIANGLE,
         KeyEvent.KEYCODE_BUTTON_SELECT to 2, KeyEvent.KEYCODE_BUTTON_START to 3,
         KeyEvent.KEYCODE_DPAD_UP to 4, KeyEvent.KEYCODE_DPAD_DOWN to 5,
         KeyEvent.KEYCODE_DPAD_LEFT to 6, KeyEvent.KEYCODE_DPAD_RIGHT to 7,
@@ -493,7 +500,7 @@ fun EmulationScreen(core: File, rom: File, requestExit: () -> Unit = {}, exit: (
                 Row { PadButton("L", 10); PadButton("L2", 12) }
             }
             Column(Modifier.align(Alignment.BottomEnd).padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                PadButton("△", 1); Row { PadButton("□", 9); Spacer(Modifier.width(48.dp)); PadButton("○", 0) }; PadButton("×", 8)
+                PadButton("△", RetroButtons.TRIANGLE); Row { PadButton("□", RetroButtons.SQUARE); Spacer(Modifier.width(48.dp)); PadButton("○", RetroButtons.CIRCLE) }; PadButton("×", RetroButtons.CROSS)
                 Row { PadButton("R", 11); PadButton("R2", 13) }
             }
             Row(Modifier.align(Alignment.BottomCenter).padding(15.dp), horizontalArrangement = Arrangement.spacedBy(15.dp)) { PadButton("Chọn", 2); PadButton("Bắt đầu", 3) }

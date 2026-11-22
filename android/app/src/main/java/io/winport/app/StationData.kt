@@ -100,8 +100,11 @@ fun detect(context: Context, doc: Doc): JsonObject? {
     error("Định dạng đĩa cần quá nhiều lượt đọc")
 }
 private fun cacheImage(context: Context, uri: Uri): String {
-    val dir=File(context.filesDir,"art").apply { mkdirs() }
     val bytes=context.contentResolver.openInputStream(uri)?.use { it.bounded(16_000_001) } ?: error("Không đọc được ảnh")
+    return cacheImage(context,bytes)
+}
+private fun cacheImage(context: Context, bytes: ByteArray): String {
+    val dir=File(context.filesDir,"art").apply { mkdirs() }
     check(bytes.size<=16_000_000) { "Ảnh vượt quá 16 MB" }
     val target=File(dir,MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) } + ".img")
     target.writeBytes(bytes)
@@ -135,6 +138,9 @@ fun scan(context: Context, tree: Uri): Pair<Int,List<String>> {
             }
             if(detected["system"]==null) { if(detected["ambiguous"]!=null) errors.add("${doc.path}: ${detected.str("ambiguous")}"); continue }
             var uri=doc.uri; var art=""
+            detected["icon"]?.jsonObject?.let { icon ->
+                art=runCatching { cacheImage(context,readRange(context,doc.uri,icon.getValue("offset").jsonPrimitive.long,icon.getValue("length").jsonPrimitive.int)) }.getOrDefault("")
+            }
             val isSfo=ext=="sfo"
             val folder=if(isSfo) doc.path.substringBeforeLast('/',"").let { if(it.endsWith("PS3_GAME",true)||it.endsWith("sce_sys",true)) it.substringBeforeLast('/',"") else it } else ""
             if(isSfo) {
@@ -167,8 +173,9 @@ fun launchExternal(context: Context, game: JsonObject, packageName: String) {
 fun stageGame(context: Context, game: JsonObject): File {
     val uri=Uri.parse(game.str("uri"))
     val path=game.str("path")
-    if(path.endsWith(".cue",true)||path.endsWith(".m3u",true)) {
-        check(game.str("folder").isNotBlank()) { "CUE/M3U cần quét thư mục để có quyền đọc các đĩa liên quan" }
+    val pspFolder=game.str("system")=="PSP" && path.endsWith(".pbp",true)
+    if(path.endsWith(".cue",true)||path.endsWith(".m3u",true)||pspFolder) {
+        check(game.str("folder").isNotBlank()) { "PBP/CUE/M3U cần quét thư mục để có quyền đọc các tệp đi kèm" }
         val docs=documents(context,Uri.parse(game.str("folder"))).filter { !it.directory }.associateBy {it.path}
         val required=linkedSetOf<String>()
         fun collect(name: String) {
@@ -184,7 +191,10 @@ fun stageGame(context: Context, game: JsonObject): File {
                 }
             }
         }
-        collect(path)
+        if(pspFolder) {
+            val files=station(context,"pspFiles",buildJsonObject { put("path",path);put("files",JsonArray(docs.keys.map(::JsonPrimitive))) }).jsonArray
+            files.forEach { required.add(it.jsonPrimitive.content) }
+        } else collect(path)
         val key=MessageDigest.getInstance("SHA-256").digest(game.str("uri").toByteArray()).joinToString("") {"%02x".format(it)}
         val dir=File(context.filesDir,"roms/set-$key").apply {mkdirs()}
         for(name in required) {

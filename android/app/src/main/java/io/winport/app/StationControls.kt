@@ -45,7 +45,7 @@ fun ControlsScreen(back: () -> Unit) {
         Row(horizontalArrangement=Arrangement.spacedBy(28.dp)) {
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(8.dp)) {
                 Text(if(waiting==null) last else "Đang chờ nút cho mã $waiting…",color=Ice)
-                listOf(listOf("△" to 1,"○" to 0,"×" to 8,"□" to 9),listOf("L1" to 10,"R1" to 11,"L2" to 12,"R2" to 13),listOf("Lên" to 4,"Xuống" to 5,"Trái" to 6,"Phải" to 7),listOf("Chọn" to 2,"Bắt đầu" to 3,"L3" to 14,"R3" to 15)).forEach { row -> Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) { row.forEach { (label,id)->ConsoleButton(label,{waiting=id},primary=waiting==id) } } }
+                listOf(listOf("△" to RetroButtons.TRIANGLE,"○" to RetroButtons.CIRCLE,"×" to RetroButtons.CROSS,"□" to RetroButtons.SQUARE),listOf("L1" to 10,"R1" to 11,"L2" to 12,"R2" to 13),listOf("Lên" to 4,"Xuống" to 5,"Trái" to 6,"Phải" to 7),listOf("Chọn" to 2,"Bắt đầu" to 3,"L3" to 14,"R3" to 15)).forEach { row -> Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) { row.forEach { (label,id)->ConsoleButton(label,{waiting=id},primary=waiting==id) } } }
                 ConsoleButton("Khôi phục mặc định",{prefs.edit().clear().apply();deadzone=.15f;opacity=.6f;size=1f;hide=true;waiting=null;last="Đã khôi phục cấu hình mặc định"})
                 Text("Ghép tay cầm trong Cài đặt Bluetooth của Android. Hai cần analog dùng các trục X/Y và Z/RZ. Vị trí nút hình học: △ trên, ○ phải, × dưới, □ trái.",color=Soft,fontSize=13.sp)
             }

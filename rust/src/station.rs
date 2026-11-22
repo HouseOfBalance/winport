@@ -273,11 +273,16 @@ fn probe(p: Probe) -> Result<Value, String> {
         } else {
             System::PSP
         };
-        return Ok(detection(
+        let mut result = detection(
             system,
             fields.get("TITLE").map(String::as_str).unwrap_or(&title),
             fields.get("DISC_ID").map(String::as_str).unwrap_or(""),
-        ));
+        );
+        let icon_end = u32le(b, 16).unwrap_or(0) as usize;
+        if end >= 40 && icon_end > end && icon_end - end <= 262144 {
+            result["icon"] = json!({"offset":end,"length":icon_end-end});
+        }
+        return Ok(result);
     }
     if b.starts_with(b"\x7fELF") {
         let flags = u32le(b, 36).unwrap_or(0) & 0x00ff0000;
@@ -396,6 +401,36 @@ fn distance(a: &str, b: &str) -> usize {
 }
 
 pub fn command(root: &Path, action: &str, payload: Value) -> Result<Value, String> {
+    if action == "pspFiles" {
+        let entry = payload["path"].as_str().ok_or("Thiếu đường dẫn PBP")?;
+        let files = payload["files"].as_array().ok_or("Thiếu danh sách tệp")?;
+        let safe = |path: &str| {
+            !path.is_empty()
+                && !path.contains(['\\', ':', '\0'])
+                && path.split('/').all(|p| !matches!(p, "" | "." | ".."))
+        };
+        if !safe(entry) || !entry.to_lowercase().ends_with(".pbp") || files.len() > 20000 {
+            return Err("Đường dẫn PBP hoặc danh sách tệp không hợp lệ".into());
+        }
+        let parent = entry
+            .rsplit_once('/')
+            .map(|(p, _)| format!("{p}/"))
+            .unwrap_or_default();
+        let mut required = std::collections::BTreeSet::new();
+        for file in files {
+            let path = file
+                .as_str()
+                .filter(|p| safe(p))
+                .ok_or("Đường dẫn tệp đi kèm không an toàn")?;
+            if path.starts_with(&parent) {
+                required.insert(path);
+            }
+        }
+        if !required.contains(entry) {
+            return Err("Không tìm thấy PBP trong thư mục; hãy quét lại".into());
+        }
+        return Ok(json!(required));
+    }
     if action == "documentKey" {
         let authority = payload["authority"]
             .as_str()
@@ -599,6 +634,111 @@ pub fn command(root: &Path, action: &str, payload: Value) -> Result<Value, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn psp_folder_files_keep_layout_and_exclude_neighbor_games() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = json!([
+            "PSP/GAME/Demo/EBOOT.PBP",
+            "PSP/GAME/Demo/ID1/PAK0.PAK",
+            "PSP/GAME/Demo/Kurok/PAK1.PAK",
+            "PSP/GAME/Demo/MP3/01.mp3",
+            "PSP/GAME/Demo/quake.cmdline",
+            "PSP/GAME/Demo-backup/EBOOT.PBP"
+        ]);
+        let selected = command(
+            dir.path(),
+            "pspFiles",
+            json!({"path":"PSP/GAME/Demo/EBOOT.PBP","files":files}),
+        )
+        .unwrap();
+        assert_eq!(selected.as_array().unwrap().len(), 5);
+        assert!(selected
+            .as_array()
+            .unwrap()
+            .contains(&json!("PSP/GAME/Demo/ID1/PAK0.PAK")));
+        assert!(!selected
+            .as_array()
+            .unwrap()
+            .contains(&json!("PSP/GAME/Demo-backup/EBOOT.PBP")));
+        assert_eq!(
+            command(
+                dir.path(),
+                "pspFiles",
+                json!({"path":"EBOOT.PBP","files":["EBOOT.PBP","data/a.bin"]})
+            )
+            .unwrap(),
+            json!(["EBOOT.PBP", "data/a.bin"])
+        );
+    }
+    #[test]
+    fn psp_folder_files_reject_empty_missing_and_unsafe_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        for payload in [
+            json!({}),
+            json!({"path":"EBOOT.PBP","files":[]}),
+            json!({"path":"EBOOT.PBP","files":["other.PBP"]}),
+            json!({"path":"../EBOOT.PBP","files":["../EBOOT.PBP"]}),
+            json!({"path":"/EBOOT.PBP","files":[]}),
+            json!({"path":"EBOOT.PBP","files":["data/../secret"]}),
+            json!({"path":"EBOOT.PBP","files":["C:/secret"]}),
+            json!({"path":"EBOOT.PBP","files":["data\\secret"]}),
+            json!({"path":"EBOOT.PBP","files":[null]}),
+        ] {
+            assert!(command(dir.path(), "pspFiles", payload).is_err());
+        }
+    }
+    #[test]
+    fn pbp_title_and_bounded_embedded_icon() {
+        let mut metadata = b"\0PSF".to_vec();
+        for value in [0x101u32, 36, 42, 1] {
+            metadata.extend(value.to_le_bytes());
+        }
+        metadata.extend(0u16.to_le_bytes());
+        metadata.extend(0x0204u16.to_le_bytes());
+        for value in [13u32, 13, 0] {
+            metadata.extend(value.to_le_bytes());
+        }
+        metadata.extend(b"TITLE\0Original PSP\0");
+        let icon_offset = 40 + metadata.len() as u32;
+        let mut pbp = b"\0PBP".to_vec();
+        for value in [
+            0x10000u32,
+            40,
+            icon_offset,
+            icon_offset + 8,
+            icon_offset + 8,
+            icon_offset + 8,
+            icon_offset + 8,
+            icon_offset + 8,
+            icon_offset + 8,
+        ] {
+            pbp.extend(value.to_le_bytes());
+        }
+        pbp.extend(metadata);
+        pbp.extend(b"\x89PNG\r\n\x1a\n");
+        let check = |bytes| {
+            probe(Probe {
+                name: "EBOOT.PBP".into(),
+                bytes,
+                chunks: vec![],
+            })
+            .unwrap()
+        };
+        let result = check(pbp.clone());
+        assert_eq!(result["title"], "Original PSP");
+        assert_eq!(result["system"], "PSP");
+        assert_eq!(result["icon"], json!({"offset":icon_offset,"length":8}));
+        for invalid_end in [0, icon_offset, icon_offset - 1, icon_offset + 262145] {
+            pbp[16..20].copy_from_slice(&invalid_end.to_le_bytes());
+            assert!(check(pbp.clone()).get("icon").is_none());
+        }
+        assert!(probe(Probe {
+            name: "EBOOT.PBP".into(),
+            bytes: b"\0PBP".to_vec(),
+            chunks: vec![]
+        })
+        .is_err());
+    }
     #[test]
     fn sfo_title_serial_and_bounds() {
         let fields = [
