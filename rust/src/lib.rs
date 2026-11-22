@@ -3,7 +3,9 @@ pub mod containers;
 pub mod jni;
 pub mod launch;
 pub mod library;
+pub mod libretro;
 pub mod profiles;
+mod retro_jni;
 pub mod storage;
 
 use components::{Component, Kind};

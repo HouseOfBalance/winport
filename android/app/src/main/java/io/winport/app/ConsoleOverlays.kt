@@ -99,7 +99,7 @@ fun ControlCenter(selected: String?, ui: UiState, close: () -> Unit, home: () ->
                 when (selected) {
                     "Power" -> Row(Modifier.padding(vertical = 16.dp)) { ConsoleButton("Exit app", exit, primary = true, mark = Mark.Power) }
                     "Notifications" -> Text(ui.error ?: ui.message ?: "You're all caught up. No new notifications.", color = Soft, fontSize = 13.sp, modifier = Modifier.padding(vertical = 23.dp))
-                    "Downloads" -> Text(if (ui.busy) "A core operation is in progress…" else "No downloads or imports in progress. Import your own runtimes in Settings → Components.", color = Soft, fontSize = 13.sp, modifier = Modifier.padding(vertical = 23.dp))
+                    "Downloads" -> Text(if (ui.busy) "A core operation is in progress…" else "Downloads are user-triggered. Manage libretro cores in Core settings.", color = Soft, fontSize = 13.sp, modifier = Modifier.padding(vertical = 23.dp))
                     "Sound" -> {
                         val audio = remember { context.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
                         var volume by remember { mutableFloatStateOf(audio.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat()) }

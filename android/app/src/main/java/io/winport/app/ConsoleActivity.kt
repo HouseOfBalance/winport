@@ -2,6 +2,7 @@ package io.winport.app
 
 import android.os.Bundle
 import android.view.KeyEvent as AndroidKey
+import android.view.MotionEvent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -54,7 +55,7 @@ class MainActivity : ComponentActivity() {
         immersive()
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(primary = Color.White, onPrimary = Night, background = Night, surface = Glass, onSurface = Color.White, secondary = Ice), typography = Typography()) {
-                Surface(Modifier.fillMaxSize(), color = Night, contentColor = Color.White) { ConsoleShell(exit = { finishAndRemoveTask() }) }
+                Surface(Modifier.fillMaxSize(), color = Night, contentColor = Color.White) { RetroShell(exit = { finishAndRemoveTask() }) }
             }
         }
     }
@@ -67,10 +68,13 @@ class MainActivity : ComponentActivity() {
     }
     override fun onWindowFocusChanged(hasFocus: Boolean) { super.onWindowFocusChanged(hasFocus); if (hasFocus) immersive() }
     override fun dispatchKeyEvent(event: AndroidKey): Boolean {
+        if (RetroInput.active && (event.keyCode == AndroidKey.KEYCODE_MENU || event.keyCode == AndroidKey.KEYCODE_BUTTON_MODE)) return super.dispatchKeyEvent(AndroidKey(event.downTime, event.eventTime, event.action, AndroidKey.KEYCODE_BACK, event.repeatCount))
+        if (RetroInput.key(event)) return true
         if (event.keyCode == AndroidKey.KEYCODE_BUTTON_A) return super.dispatchKeyEvent(AndroidKey(event.downTime, event.eventTime, event.action, AndroidKey.KEYCODE_DPAD_CENTER, event.repeatCount))
         if (event.keyCode == AndroidKey.KEYCODE_BUTTON_B || event.keyCode == AndroidKey.KEYCODE_ESCAPE) return super.dispatchKeyEvent(AndroidKey(event.downTime, event.eventTime, event.action, AndroidKey.KEYCODE_BACK, event.repeatCount))
         return super.dispatchKeyEvent(event)
     }
+    override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean = RetroInput.motion(event) || super.dispatchGenericMotionEvent(event)
 }
 
 @Composable

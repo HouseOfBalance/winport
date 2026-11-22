@@ -1,70 +1,62 @@
-# Build verification
+# Libretro Step 1 verification
 
-Built on Ubuntu with OpenJDK 17, Rust 1.99.1, cargo-ndk 4.1.2, SDK 35, build tools 35.0.0 (AGP also installed 34.0.0), and NDK 27.2.12479018. Gradle wrapper 8.9. Native libraries were built for API 26.
+Ubuntu, OpenJDK 17, Rust 1.99.1, cargo-ndk 4.1.2, SDK 35, NDK 27.2.12479018. Gradle 8.9 / AGP 8.7.3; minSdk/native API 26, targetSdk 35. Runtime check: Android 15 / API 35 Google APIs x86_64 emulator, 2400 × 1080 landscape, 320 dpi, SwiftShader.
 
-## Rust tests
+## Unit tests
 
-Command: `cd rust && cargo test`
+Command: `cd rust && cargo test --locked` after the final Rust edit.
 
 ```text
-running 8 tests
-test tests::each_missing_component_has_clear_error ... ok
-test tests::corrupt_storage_is_not_overwritten ... ok
-test tests::empty_args_and_affinity_are_valid ... ok
-test tests::invalid_paths_and_profiles_are_rejected ... ok
-test tests::launch_plan_preserves_arguments_and_settings ... ok
-test tests::persistence_round_trip_and_empty_defaults ... ok
-test tests::unsafe_zip_leaves_no_component ... ok
-test tests::import_zip_and_container_crud ... ok
-
-test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+running 13 tests
+test libretro::tests::environment_directories_formats_and_legacy_defaults ... ok
+test libretro::tests::formats_and_padded_pitch ... ok
+test libretro::tests::modern_defaults_and_bounded_audio ... ok
+test libretro::tests::rejects_invalid_frames ... ok
+test libretro::tests::joypad_bitmask_analog_and_invalid_input ... ok
+...
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
 
    Doc-tests winport_core
-
 running 0 tests
-
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 ```
 
-## Android native libraries
+Coverage includes all three pixel formats and padded pitch, zero/truncated/unsupported frames, system/save directory pointers, legacy/default core options, v2 defaults, missing variables, unknown/null environment commands, bounded audio, joypad bitmasks and analog/invalid input. The eight existing storage/launch/component regression tests still pass; their Windows functionality is no longer exposed by the active UI.
 
-Command: `bash scripts/build-rust.sh` (cargo-ndk arm64-v8a and x86_64, `--platform 26`, `build --release --locked`). Output summary:
+## Native / Android build
+
+Command: `cd android && ./gradlew assembleDebug --max-workers=2`, with the SDK/NDK/JDK environment documented in README loaded. One invocation after starting a fresh shell failed with `SDK location not found`; SDK files were present, but ANDROID_HOME was not exported. Loading the documented environment resolved it without source/configuration changes.
 
 ```text
     Building arm64-v8a (aarch64-linux-android)
-    Finished `release` profile [optimized] target(s) in 1m 00s
+   Compiling winport_core v0.1.0 (/home/ubuntu/repos/winport/rust)
+> Task :app:buildRust
+    Finished `release` profile [optimized] target(s) in 14.36s
     Building x86_64 (x86_64-linux-android)
-    Finished `release` profile [optimized] target(s) in 34.78s
+   Compiling winport_core v0.1.0 (/home/ubuntu/repos/winport/rust)
+    Finished `release` profile [optimized] target(s) in 12.53s
      Copying libraries to /home/ubuntu/repos/winport/android/app/src/main/jniLibs
-```
-
-## APK
-
-Command: `cd android && ./gradlew assembleDebug --max-workers=2`
-
-```text
-> Task :app:packageDebug
-> Task :app:createDebugApkListingFileRedirect UP-TO-DATE
+...
 > Task :app:assembleDebug
 
-BUILD SUCCESSFUL in 1m 2s
-36 actionable tasks: 4 executed, 32 up-to-date
+BUILD SUCCESSFUL in 31s
+36 actionable tasks: 5 executed, 31 up-to-date
 ```
 
-APK: `/home/ubuntu/repos/winport/android/app/build/outputs/apk/debug/app-debug.apk`
+APK: `/home/ubuntu/repos/winport/android/app/build/outputs/apk/debug/app-debug.apk`.
 
-Command: `unzip -l android/app/build/outputs/apk/debug/app-debug.apk | rg libwinport_core.so`
+`unzip -l android/app/build/outputs/apk/debug/app-debug.apk | rg '\.so'`:
 
 ```text
-   989744  1981-01-01 01:01   lib/arm64-v8a/libwinport_core.so
-  1076472  1981-01-01 01:01   lib/x86_64/libwinport_core.so
+    10096  1981-01-01 01:01   lib/arm64-v8a/libandroidx.graphics.path.so
+    10760  1981-01-01 01:01   lib/x86_64/libandroidx.graphics.path.so
+  1052400  1981-01-01 01:01   lib/arm64-v8a/libwinport_core.so
+  1147640  1981-01-01 01:01   lib/x86_64/libwinport_core.so
 ```
 
-The first assemble attempt hit HTTP 429 from Maven Central. The build now uses Google's public Maven Central mirror before Central. Initial compiler/manifest warnings were fixed, and the final assemble above succeeded. This verifies packaging and compilation, not execution of imported Windows games.
+These are only the frontend and Compose graphics helper. APK inspection found no `_libretro_android.so`, generated demo or BIOS. The APK's `DebugProbesKt.bin` is a Kotlin coroutine resource, not a ROM. No core/BIOS/ROM binary is tracked in Git.
 
-## Emulator
-
-Installed on an Android 15 / API 35 x86_64 Google APIs emulator. The first emulator run crashed using `swiftshader_indirect`; restarting with `-gpu swiftshader -feature -Vulkan`, 2 cores and 1536 MB RAM booted successfully. Installation waited for `sys.boot_completed` (ADB connection alone is not package-manager readiness).
+Final APK installation and cold start:
 
 ```text
 Performing Streamed Install
@@ -73,35 +65,72 @@ Starting: Intent { cmp=io.winport.app/.MainActivity }
 Status: ok
 LaunchState: COLD
 Activity: io.winport.app/.MainActivity
-TotalTime: 6064
-WaitTime: 6159
+TotalTime: 6082
+WaitTime: 6125
 Complete
 ```
 
-The original portrait Library capture is retained as `docs/screenshot.png`. The console redesign replaces that UI; current evidence is below.
+## In-app runtime download and PS1 execution
 
-## Landscape console redesign
+Buildbot directory listings contained `swanstation_libretro_android.so.zip`, `mednafen_psx_libretro_android.so.zip`, `mednafen_psx_hw_libretro_android.so.zip` and `pcsx_rearmed_libretro_android.so.zip` for **both arm64-v8a and x86_64**. The app offers the software-capable SwanStation, Mednafen PSX and PCSX ReARMed choices. SwanStation is preferred when a legal BIOS is available; PCSX ReARMed was used for the HLE-only check.
 
-The Rust core, `NativeCore.kt` and `CoreViewModel.kt` were preserved. `cargo test --locked` still reports **8 passed, 0 failed**. The APK assemble output above is from the final redesigned UI build; both native ABIs remain packaged.
+Using the app UI, selected PCSX ReARMed · HLE and pressed Download core. The core came from:
 
-The final APK installed successfully on the same API 35 emulator, configured to 2400 × 1080 landscape at 320 dpi. The emulator initially showed a transient “System UI isn't responding” dialog during cold startup; after the emulator settled, the launcher rendered and responded to navigation. The invalid capture was replaced, not used as evidence. SwiftShader is software-rendered and visibly slow here; these captures do not establish physical-device animation performance.
+`https://buildbot.libretro.com/nightly/android/latest/x86_64/pcsx_rearmed_libretro_android.so.zip`
 
-Fresh Rust state contained no games, containers or components, only the three performance presets. After capturing the empty state, an external, temporary ADB Java helper invoked the real `NativeCore.call` JNI entry point as the app UID:
+It was installed at `/data/user/0/io.winport.app/files/cores/x86_64/pcsx_rearmed_libretro_android.so`; SHA-256:
 
-- Imported a flattened copy of upstream Kron4ek Wine-Builds 10.0 amd64 using `installComponent`.
-- Created the real `Windows games` prefix with `addContainer`.
-- Copied the downloaded OpenTTD 14.1 and Luanti 5.11.0 Windows game trees into that prefix.
-- Registered both actual EXEs with `addGame`; Rust generated the game IDs.
+```text
+2f4ee471b6f692aac66ecf4aa92f2359eb11d6add7efa362a3ee3cd50f5731ee
+```
 
-The helper, archives, executables and emulator state are outside the repository. No game or runtime defaults were added. Only generated-gradient artwork is shown. Box64, DXVK and rootfs remain absent; these are launcher checks, not successful Windows execution or Wine compatibility tests.
+Generated an original CC0 PS-X EXE with `python3 scripts/make-ps1-demo.py /home/ubuntu/winport-verification/winport-demo.exe`:
 
-Current screenshots:
+```text
+/home/ubuntu/winport-verification/winport-demo.exe: 10240 bytes, original CC0 PS-X EXE
+```
 
-- `docs/home-empty.png`
-- `docs/home-two-games.png`
-- `docs/game-options.png`
-- `docs/control-center.png`
-- `docs/settings.png`
-- `docs/settings-profiles.png`
+Pushed it to `/sdcard/Download/`, then selected it with the app's Open ROM / Android document picker. ROM SHA-256: `f40fff5e2c58b8e31eb39105a7387efee0b929a0f191623a11e46d888207b85d`.
 
-Touch, ADB-injected D-pad/controller keys and the displayed focus indicators were used for the requested screens. SAF import/artwork flows are wired to the retained ViewModel and Android document picker but were not exercised end-to-end. No physical gamepad or Android ARM64 device was available.
+Relevant logcat excerpts (tag `WinportRetro`):
+
+```text
+Starting PCSX-ReARMed r26l-137-g7b0e8f8 ... 64bit pic ssse3 lightrec gpu=BUILTIN_GPU
+No BIOS files found.
+Using PIXEL_FORMAT 2
+plugin: /builtin_gpu
+plugin: /builtin_spu
+HLE BIOS initialized.
+note: running with HLE BIOS, expect compatibility problems
+port: 1  device: dualshock
+```
+
+`files/system` was absent before first launch and remained empty afterward. No Sony BIOS or commercial ROM was downloaded. The logs, app-private downloaded core and rendered homebrew demonstrate successful `dlopen` from writable app-private data on API 35 / targetSdk 35, not execution of an imported standalone program. The framebuffer shows the original WINPORT / PS1 / CC0 lettering, color bars and animated square. A later capture showed a different square position.
+
+## State and SRAM round trips
+
+Used Pause → Save state, Load state and Verify state round trip. Final app-process logcat:
+
+```text
+11-22 04:14:53.898  5897  6105 I WinportState: save {"savedBytes":4456448}
+11-22 04:14:57.657  5897  6105 I WinportState: load {"loaded":true}
+11-22 04:15:01.251  5897  6105 I WinportState: verify {"bytes":4456448,"frameAdvanced":true,"replayMatched":true,"restored":true}
+```
+
+The verifier writes the state file, runs five frames, reloads the file, runs the same five frames again, compares the complete software framebuffer and restores the file once more. The animated demo advanced and replayed identically, rather than merely accepting an unserialize call. An initial diagnostic compared serialized blobs and found they were not byte-identical even though unserialize succeeded; byte-identical reserialization is not assumed by the final verifier. The cause of the blob difference was not investigated. Pausing before the first video callback correctly reported `No software video frame to verify`; after resuming until video appeared, the final check above passed.
+
+The clean Exit wrote a 131,072-byte `sram.bin` next to the 4,456,448-byte `state.bin`, under `files/saves/2f4ee471b6f692aac66ecf4a/<ROM hash>/`. A subsequent fresh session loaded with that file present and rendered again without a size/load error. This checks persistence of the core's initial memory-card contents, not an in-game memory-card write. PCSX also created/loaded its own 131,072-byte `pcsx-card2.mcd`.
+
+AudioFlinger showed the app's 44,100 Hz stereo PCM AudioTrack and consumed frames. The homebrew is silent; audible correctness was not checked, and the software emulator reported underruns. No fatal Java/native crash appeared in the filtered runtime logs.
+
+## Screenshot evidence
+
+- `docs/ps1-core-installed.png` — user-triggered runtime download confirmation.
+- `docs/ps1-homebrew.png` — actual PS1 software video, HLE, original virtual pad.
+- `docs/ps1-state-roundtrip.png` — pause menu and successful state replay result.
+
+These were visually inspected; no Compose preview or fabricated framebuffer was used. Older screenshots document the historical Windows-launcher UI only.
+
+## Unverified / deferred
+
+No physical ARM64 device, Bluetooth gamepad or audible test. KeyEvent/MotionEvent dispatch is implemented; Rust input mapping has unit coverage, but the silent noninteractive demo does not establish hardware controller behavior. SwanStation and Beetle availability was checked, but their execution/BIOS setup was not tested. No GPU rendering, multi-file disc import, full PlayStation library/BIOS UI, physical-device performance, suspend/process-death recovery or game compatibility matrix is claimed. Core downloads are HTTPS nightlies, not signed/pinned artifacts or sandboxed code. Nothing was pushed.
