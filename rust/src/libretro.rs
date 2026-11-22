@@ -1,4 +1,5 @@
-//! Single-session software libretro frontend. Core calls are serialized by the JNI session lock.
+//! Single-session libretro frontend. Core calls are serialized by the JNI session lock.
+use crate::retro_hw::RenderCallback;
 use libloading::Library;
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -127,6 +128,8 @@ struct Callbacks {
     av: AvInfo,
     controller: u32,
     descriptors: Vec<String>,
+    hw: Option<RenderCallback>,
+    hw_frame: bool,
 }
 impl Callbacks {
     fn new(system: &Path, saves: &Path) -> Result<Self, String> {
@@ -145,6 +148,8 @@ impl Callbacks {
             av: AvInfo::default(),
             controller: 1,
             descriptors: Vec::new(),
+            hw: None,
+            hw_frame: false,
         })
     }
     unsafe fn option(&mut self, key: *const c_char, default: *const c_char) {
@@ -248,6 +253,21 @@ impl Callbacks {
                 }
                 true
             }
+            14 => {
+                let callback = &mut *(data as *mut RenderCallback);
+                if !crate::retro_hw::supported(callback) {
+                    return false;
+                }
+                #[cfg(target_os = "android")]
+                {
+                    callback.get_current_framebuffer = Some(crate::retro_hw::wp_gl_framebuffer);
+                    callback.get_proc_address = Some(crate::retro_hw::wp_gl_proc);
+                    self.hw = Some(*callback);
+                    return true;
+                }
+                #[cfg(not(target_os = "android"))]
+                false
+            }
             35 => {
                 let info = &*(data as *const ControllerInfo);
                 if !info.types.is_null() && info.count <= 128 {
@@ -339,7 +359,7 @@ impl Callbacks {
                 true
             }
             56 => {
-                *(data as *mut u32) = 0;
+                *(data as *mut u32) = if cfg!(target_os = "android") { 4 } else { 0 };
                 true
             }
             57 => {
@@ -422,6 +442,19 @@ pub fn convert_pixels(
     Ok(pixels)
 }
 unsafe extern "C" fn video(data: *const c_void, w: u32, h: u32, pitch: usize) {
+    if data as usize == usize::MAX {
+        if let Ok(mut callbacks) = CALLBACKS.lock() {
+            if let Some(c) = callbacks.as_mut() {
+                if c.hw.is_some() && w > 0 && h > 0 && w <= 8192 && h <= 8192 {
+                    c.width = w;
+                    c.height = h;
+                    c.frames += 1;
+                    c.hw_frame = true;
+                }
+            }
+        }
+        return;
+    }
     if data.is_null()
         || data as usize == usize::MAX
         || w == 0
@@ -538,6 +571,8 @@ pub struct Session {
     initialized: bool,
     name: String,
     rom: String,
+    #[cfg(target_os = "android")]
+    graphics: Option<crate::retro_hw::Graphics>,
 }
 unsafe impl Send for Session {}
 impl Session {
@@ -547,10 +582,27 @@ impl Session {
         rom: &Path,
         system: &Path,
         saves: &Path,
+        _java_vm: *mut c_void,
     ) -> Result<Self, String> {
         fs::create_dir_all(system).map_err(|e| e.to_string())?;
         fs::create_dir_all(saves).map_err(|e| e.to_string())?;
+        #[cfg(target_os = "android")]
+        if core.file_name().and_then(|n| n.to_str()) == Some("play_libretro_android.so") {
+            std::env::set_var("EXTERNAL_STORAGE", saves);
+        }
+        let label = CString::new(core.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
+        winport_retro_log(1, b"Loading core %s\n\0".as_ptr().cast(), label.as_ptr());
         let library = Library::new(core).map_err(|e| format!("dlopen {}: {e}", core.display()))?;
+        #[cfg(target_os = "android")]
+        if core.file_name().and_then(|n| n.to_str()) == Some("play_libretro_android.so")
+            && !_java_vm.is_null()
+        {
+            if let Ok(set_vm) = library.get::<unsafe extern "C" fn(*mut c_void)>(
+                b"_ZN9Framework7CJavaVM9SetJavaVMEP7_JavaVM\0",
+            ) {
+                set_vm(_java_vm);
+            }
+        }
         macro_rules! sym {
             ($name:literal, $ty:ty) => {
                 *library
@@ -636,6 +688,8 @@ impl Session {
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned(),
+            #[cfg(target_os = "android")]
+            graphics: None,
         };
         *CALLBACKS.lock().map_err(|e| e.to_string())? = Some(Callbacks::new(system, saves)?);
         clear_input();
@@ -645,7 +699,9 @@ impl Session {
         set_batch(audio_batch);
         set_poll(poll);
         set_input(input);
+        winport_retro_log(1, b"Initializing core\n\0".as_ptr().cast());
         init();
+        winport_retro_log(1, b"Core initialized\n\0".as_ptr().cast());
         session.initialized = true;
         let game = GameInfo {
             path: session._path.as_ptr(),
@@ -677,10 +733,31 @@ impl Session {
         if let Some(c) = CALLBACKS.lock().unwrap().as_mut() {
             c.av = av;
         }
+        #[cfg(target_os = "android")]
+        {
+            let hw = CALLBACKS.lock().unwrap().as_ref().and_then(|c| c.hw);
+            session.graphics = hw.map(crate::retro_hw::Graphics::new);
+            session.sync_surface()?;
+        }
         session.load_sram()?;
         Ok(session)
     }
+    pub fn sync_surface(&mut self) -> Result<bool, String> {
+        #[cfg(target_os = "android")]
+        if let Some(graphics) = self.graphics.as_mut() {
+            let geometry = CALLBACKS.lock().unwrap().as_ref().unwrap().av.geometry;
+            return graphics.sync(
+                geometry.max_width.max(geometry.base_width),
+                geometry.max_height.max(geometry.base_height),
+            );
+        }
+        Ok(true)
+    }
     pub fn run_frame(&mut self) -> Result<(), String> {
+        if !self.sync_surface()? {
+            std::thread::sleep(Duration::from_millis(10));
+            return Ok(());
+        }
         if self.paused {
             return Ok(());
         }
@@ -695,7 +772,18 @@ impl Session {
                 self.fps = c.av.timing.fps;
             }
             #[cfg(target_os = "android")]
-            window::render(&c.frame, c.width, c.height);
+            if let Some(graphics) = self.graphics.as_mut() {
+                if c.hw_frame {
+                    let aspect = if c.av.geometry.aspect > 0.0 {
+                        c.av.geometry.aspect
+                    } else {
+                        c.width as f32 / c.height as f32
+                    };
+                    graphics.present(c.width, c.height, aspect)?;
+                }
+            } else {
+                window::render(&c.frame, c.width, c.height);
+            }
         }
         self.deadline += Duration::from_secs_f64(1.0 / self.fps);
         let now = Instant::now();
@@ -809,6 +897,10 @@ impl Session {
 }
 impl Drop for Session {
     fn drop(&mut self) {
+        #[cfg(target_os = "android")]
+        if let Some(graphics) = self.graphics.as_mut() {
+            graphics.notify_destroy();
+        }
         unsafe {
             if self.loaded {
                 (self.unload)();
@@ -817,6 +909,8 @@ impl Drop for Session {
                 (self.deinit)();
             }
         }
+        #[cfg(target_os = "android")]
+        self.graphics.take();
         *CALLBACKS.lock().unwrap() = None;
     }
 }
@@ -836,6 +930,7 @@ pub mod window {
     extern "C" {
         fn ANativeWindow_fromSurface(env: *mut c_void, surface: *mut c_void) -> *mut c_void;
         fn ANativeWindow_release(window: *mut c_void);
+        fn ANativeWindow_acquire(window: *mut c_void);
         fn ANativeWindow_setBuffersGeometry(
             window: *mut c_void,
             w: i32,
@@ -845,12 +940,22 @@ pub mod window {
         fn ANativeWindow_lock(window: *mut c_void, buffer: *mut Buffer, dirty: *mut c_void) -> i32;
         fn ANativeWindow_unlockAndPost(window: *mut c_void) -> i32;
     }
-    static WINDOW: Mutex<(usize, u32, u32)> = Mutex::new((0, 0, 0));
+    static WINDOW: Mutex<(usize, u32, u32, u64)> = Mutex::new((0, 0, 0, 0));
+    pub fn acquire() -> (usize, u64) {
+        let w = WINDOW.lock().unwrap();
+        if w.0 != 0 {
+            unsafe {
+                ANativeWindow_acquire(w.0 as *mut c_void);
+            }
+        }
+        (w.0, w.3)
+    }
     pub unsafe fn set(env: *mut c_void, surface: *mut c_void) {
         let mut w = WINDOW.lock().unwrap();
         if w.0 != 0 {
             ANativeWindow_release(w.0 as *mut c_void);
         }
+        let generation = w.3.wrapping_add(1);
         *w = (
             if surface.is_null() {
                 0
@@ -859,6 +964,7 @@ pub mod window {
             },
             0,
             0,
+            generation,
         );
     }
     pub fn render(frame: &[u32], width: u32, height: u32) {
@@ -987,7 +1093,8 @@ mod tests {
             query.key = unknown.as_ptr();
             assert!(!c.environment(15, (&mut query as *mut Variable).cast()));
             assert!(query.value.is_null());
-            assert!(!c.environment(14, vars.as_mut_ptr().cast()));
+            let mut hw: RenderCallback = std::mem::zeroed();
+            assert!(!c.environment(14, (&mut hw as *mut RenderCallback).cast()));
             assert!(!c.environment(9999, vars.as_mut_ptr().cast()));
             assert!(!c.environment(9, ptr::null_mut()));
         }
@@ -1013,5 +1120,33 @@ mod tests {
         assert_eq!(c.audio.len(), 192_000);
         assert_eq!(c.audio_dropped, 2);
         assert_eq!(c.audio.back(), Some(&3));
+    }
+    #[test]
+    fn av_changes_and_hardware_preference() {
+        let mut c = Callbacks::new(Path::new("."), Path::new(".")).unwrap();
+        let mut av = AvInfo {
+            geometry: Geometry {
+                base_width: 480,
+                base_height: 272,
+                max_width: 960,
+                max_height: 544,
+                aspect: 16.0 / 9.0,
+            },
+            timing: Timing {
+                fps: 59.94,
+                sample_rate: 44100.0,
+            },
+        };
+        unsafe {
+            assert!(c.environment(32, (&mut av as *mut AvInfo).cast()));
+            assert_eq!(c.av.timing.fps, 59.94);
+            av.geometry.base_width = 960;
+            assert!(c.environment(37, (&mut av.geometry as *mut Geometry).cast()));
+            assert_eq!(c.av.geometry.base_width, 960);
+            let mut preferred = 99u32;
+            assert!(c.environment(56, (&mut preferred as *mut u32).cast()));
+            assert_eq!(preferred, if cfg!(target_os = "android") { 4 } else { 0 });
+            assert!(!c.environment(14, ptr::null_mut()));
+        }
     }
 }

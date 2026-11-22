@@ -44,6 +44,10 @@ pub extern "system" fn Java_io_winport_app_RetroNative_command(
                     Path::new(field("rom")?),
                     Path::new(field("system")?),
                     Path::new(field("saves")?),
+                    env.get_java_vm()
+                        .map_err(|e| e.to_string())?
+                        .get_java_vm_pointer()
+                        .cast(),
                 )
             }?);
             return Ok(session.as_ref().unwrap().info().to_string());
@@ -59,6 +63,10 @@ pub extern "system" fn Java_io_winport_app_RetroNative_command(
         match action.as_str() {
             "run" => {
                 s.run_frame()?;
+                Ok(String::new())
+            }
+            "surfaceSync" => {
+                s.sync_surface()?;
                 Ok(String::new())
             }
             "pause" => {

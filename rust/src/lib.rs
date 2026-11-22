@@ -5,6 +5,7 @@ pub mod launch;
 pub mod library;
 pub mod libretro;
 pub mod profiles;
+mod retro_hw;
 mod retro_jni;
 pub mod storage;
 

@@ -98,10 +98,61 @@ object RetroInput {
     }
 }
 
-private val coreNames = listOf("swanstation", "mednafen_psx", "pcsx_rearmed")
+private val coreNames = listOf("swanstation", "mednafen_psx", "pcsx_rearmed", "ppsspp", "play")
+private fun coreLabel(name: String) = when (name) {
+    "ppsspp" -> "PSP · PPSSPP"
+    "play" -> "PS2 · Play!"
+    "pcsx_rearmed" -> "PS1 · PCSX ReARMed HLE"
+    else -> "PS1 · $name"
+}
 private fun abi(): String = Build.SUPPORTED_ABIS.firstOrNull { it == "arm64-v8a" || it == "x86_64" }
     ?: error("This step supports arm64-v8a and x86_64 only")
 private fun coreFile(context: Context, name: String) = File(context.filesDir, "cores/${abi()}/${name}_libretro_android.so")
+
+private fun downloadPspAssets(context: Context) {
+    val system = File(context.filesDir, "system").apply { mkdirs() }
+    val target = File(system, "PPSSPP")
+    if (File(target, ".installed").exists()) return
+    val stage = File(system, "PPSSPP.part").apply { deleteRecursively(); mkdirs() }
+    val backup = File(system, "PPSSPP.previous")
+    val connection = URL("https://buildbot.libretro.com/assets/system/PPSSPP.zip").openConnection() as java.net.HttpURLConnection
+    connection.connectTimeout = 15000; connection.readTimeout = 30000
+    try {
+        check(connection.responseCode == 200) { "PPSSPP assets HTTP ${connection.responseCode}" }
+        var total = 0L; var entries = 0
+        ZipInputStream(connection.inputStream).use { zip ->
+            while (true) {
+                val entry = zip.nextEntry ?: break
+                require(++entries <= 4096) { "Too many PPSSPP asset files" }
+                require(entry.name.startsWith("PPSSPP/")) { "Unexpected PPSSPP asset path" }
+                val relative = entry.name.removePrefix("PPSSPP/")
+                val destination = File(stage, relative)
+                require(destination.canonicalPath == stage.canonicalPath || destination.canonicalPath.startsWith(stage.canonicalPath + File.separator)) { "Unsafe PPSSPP asset path" }
+                if (entry.isDirectory) destination.mkdirs() else {
+                    destination.parentFile!!.mkdirs()
+                    destination.outputStream().use { out ->
+                        val buffer = ByteArray(65536)
+                        while (true) {
+                            val count = zip.read(buffer); if (count < 0) break
+                            total += count; require(total <= 100_000_000) { "PPSSPP assets exceed 100 MB" }
+                            out.write(buffer, 0, count)
+                        }
+                    }
+                }
+                zip.closeEntry()
+            }
+        }
+        check(File(stage, "flash0/font/ltn0.pgf").isFile && File(stage, "LICENSE.TXT").isFile) { "Incomplete PPSSPP assets" }
+        File(stage, ".installed").writeText("libretro PPSSPP assets\n")
+        backup.deleteRecursively()
+        if (target.exists()) check(target.renameTo(backup)) { "Cannot stage previous PPSSPP assets" }
+        if (!stage.renameTo(target)) {
+            backup.renameTo(target)
+            error("Cannot install PPSSPP assets")
+        }
+        backup.deleteRecursively()
+    } finally { connection.disconnect(); stage.deleteRecursively() }
+}
 
 private fun downloadCore(context: Context, name: String): File {
     require(name in coreNames)
@@ -136,6 +187,7 @@ private fun downloadCore(context: Context, name: String): File {
         check(found) { "Archive does not contain ${target.name}" }
         val header = ByteArray(4); staging.inputStream().use { check(it.read(header) == 4) }
         check(header.contentEquals(byteArrayOf(0x7f, 0x45, 0x4c, 0x46))) { "Downloaded core is not ELF" }
+        if (name == "ppsspp") downloadPspAssets(context)
         java.nio.file.Files.move(staging.toPath(), target.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
         return target
     } finally { staging.delete(); archive.delete() }
@@ -143,7 +195,7 @@ private fun downloadCore(context: Context, name: String): File {
 
 private fun importRom(context: Context, uri: Uri): File {
     val name = context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c -> if (c.moveToFirst()) c.getString(0) else null } ?: error("No ROM filename")
-    require(name.substringAfterLast('.').lowercase() in listOf("exe", "ps-exe", "bin", "iso", "img", "chd", "pbp")) { "Choose a single-file PS1 ROM (.exe, .bin, .iso, .img, .chd, .pbp). Multi-file CUE import comes later." }
+    require(name.substringAfterLast('.').lowercase() in listOf("exe", "ps-exe", "bin", "iso", "img", "chd", "pbp", "elf", "prx", "cso", "isz")) { "Choose single-file PS1, PSP or PS2 content (.exe, .elf, .pbp, .iso, .chd, .cso). Multi-file CUE import comes later." }
     val temp = File.createTempFile("rom-", ".part", context.cacheDir)
     try {
         val digest = MessageDigest.getInstance("SHA-256")
@@ -173,6 +225,8 @@ class RetroSession(private val context: Context, private val core: File, private
         Thread({
             var failure: String? = null
             try {
+                while (alive && !readySurface) Thread.sleep(10)
+                if (!alive) return@Thread
                 val coreHash = MessageDigest.getInstance("SHA-256").digest(core.readBytes()).take(12).joinToString("") { "%02x".format(it) }
                 val saves = File(context.filesDir, "saves/$coreHash/${rom.parentFile!!.name}")
                 val info = Json.parseToJsonElement(RetroNative.command("start", buildJsonObject {
@@ -191,6 +245,7 @@ class RetroSession(private val context: Context, private val core: File, private
                             }
                         } catch (e: Exception) { main.post { status(e.message ?: "Operation failed") } }
                     }
+                    RetroNative.command("surfaceSync")
                     if (readySurface && !paused) RetroNative.command("run") else Thread.sleep(10)
                 }
             } catch (e: Exception) { failure = e.message ?: "Emulation failed" }
@@ -273,13 +328,18 @@ fun RetroShell(exit: () -> Unit) {
             if (settings) {
                 PageTitle("PlayStation runtime", "SETTINGS / LIBRETRO", { settings = false })
                 Row(horizontalArrangement = Arrangement.spacedBy(35.dp)) {
-                    Column(Modifier.width(260.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        coreNames.forEach { name -> MenuRow(if (name == "pcsx_rearmed") "PCSX ReARMed · HLE" else name, if (name == selectedCore) "Selected" else "PS1 core", Mark.Chip) { if (!busy) { selectedCore = name; installed = coreFile(context, name).exists() } } }
+                    Column(Modifier.width(260.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        coreNames.forEach { name -> MenuRow(coreLabel(name), if (name == selectedCore) "Selected" else "Downloadable core", Mark.Chip) { if (!busy) { selectedCore = name; installed = coreFile(context, name).exists() } } }
                     }
                     Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(15.dp)) {
                         Text(selectedCore, fontSize = 30.sp, fontWeight = FontWeight.Light)
-                        Text("Android ${abi()} · software video · stereo PCM", color = Soft)
-                        Text(if (selectedCore == "pcsx_rearmed") "PCSX ReARMed supports HLE BIOS: no Sony BIOS is needed for the test homebrew. Compatibility is limited." else "SwanStation is preferred with a compatible, legally obtained BIOS; Beetle also requires BIOS. No BIOS is bundled or downloaded. Hardware rendering is not supported in this step.", color = Soft)
+                        Text("Android ${abi()} · software / GLES3 video · stereo PCM", color = Soft)
+                        Text(when (selectedCore) {
+                            "pcsx_rearmed" -> "PCSX ReARMed supports HLE BIOS: no Sony BIOS is needed for the test homebrew. Compatibility is limited."
+                            "ppsspp" -> "PSP via OpenGL ES. Download includes PPSSPP's open-source assets and replacement fonts in system/PPSSPP; no Sony BIOS."
+                            "play" -> "PS2 via Play! and OpenGL ES. Play! uses HLE, not a Sony BIOS. Compatibility and device performance vary."
+                            else -> "SwanStation and Beetle require a compatible, legally obtained BIOS. No BIOS is bundled or downloaded. PS1 uses software video."
+                        }, color = Soft)
                         ConsoleButton(if (busy) "Downloading…" else if (installed) "Download latest again" else "Download core", {
                             scope.launch { busy = true; try { withContext(Dispatchers.IO) { downloadCore(context, selectedCore) }; installed = true; message = "Core downloaded to app-private data. Ready to open a ROM." } catch (e: Exception) { message = "Download failed: ${e.message}" } finally { busy = false } }
                         }, primary = true, enabled = !busy)
@@ -302,11 +362,11 @@ fun RetroShell(exit: () -> Unit) {
                 Text(if (media) "Your media. Your space." else "Play beyond the familiar.", fontSize = 36.sp, fontWeight = FontWeight.Light)
                 Text(if (media) "No media apps added." else "Your own PlayStation games. An open-source runtime. No games or BIOS bundled.", color = Soft, modifier = Modifier.padding(vertical = 15.dp))
                 if (!media) Row(horizontalArrangement = Arrangement.spacedBy(15.dp)) {
-                    ConsoleButton(if (installed) "Open ROM" else "Set up PS1 core", { if (installed) picker.launch(arrayOf("*/*")) else settings = true }, primary = true, enabled = !busy)
+                    ConsoleButton(if (installed) "Open ROM" else "Set up core", { if (installed) picker.launch(arrayOf("*/*")) else settings = true }, primary = true, enabled = !busy)
                     ConsoleButton("Core settings", { settings = true }, mark = Mark.Settings)
                 }
                 Spacer(Modifier.weight(1f))
-                Text("WINPORT  /  LIBRETRO SOFTWARE FRONTEND", color = Soft, fontSize = 10.sp, letterSpacing = 2.sp)
+                Text("WINPORT  /  LIBRETRO FRONTEND", color = Soft, fontSize = 10.sp, letterSpacing = 2.sp)
             }
         }
         if (busy) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
@@ -335,11 +395,11 @@ fun EmulationScreen(core: File, rom: File, exit: (String?) -> Unit) {
     Box(Modifier.fillMaxSize().background(Color.Black).pointerInput(Unit) {}) {
         AndroidView(factory = { ctx -> SurfaceView(ctx).apply {
             holder.addCallback(object : SurfaceHolder.Callback {
-                override fun surfaceCreated(holder: SurfaceHolder) { RetroNative.surface(holder.surface); session.readySurface = true }
+                override fun surfaceCreated(holder: SurfaceHolder) {}
                 override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) { RetroNative.surface(holder.surface); session.readySurface = true }
                 override fun surfaceDestroyed(holder: SurfaceHolder) { session.readySurface = false; RetroInput.clear(); RetroNative.surface(null) }
             })
-        } }, modifier = Modifier.fillMaxHeight().aspectRatio(4f / 3f).align(Alignment.Center))
+        } }, modifier = if (core.name.startsWith("ppsspp_") || core.name.startsWith("play_")) Modifier.fillMaxSize() else Modifier.fillMaxHeight().aspectRatio(4f / 3f).align(Alignment.Center))
         Row(Modifier.align(Alignment.TopEnd).padding(12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) { ConsoleButton("Pause", { pause() }, mark = Mark.More) }
         if (!paused) {
             Column(Modifier.align(Alignment.BottomStart).padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
