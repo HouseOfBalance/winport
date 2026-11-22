@@ -77,6 +77,7 @@ fun StationShell(exit: () -> Unit) {
     var system by remember { mutableStateOf("PS1") }
     var message by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
+    var staging by remember { mutableStateOf<StageProgress?>(null) }
     var pending by remember { mutableStateOf<JsonObject?>(null) }
     var options by remember { mutableStateOf(false) }
     var clock by remember { mutableStateOf("") }
@@ -87,7 +88,7 @@ fun StationShell(exit: () -> Unit) {
     val game=games.find { it.str("uri")==selected } ?: games.firstOrNull()
     fun job(block: suspend () -> String?) {
         if(busy) return
-        scope.launch { busy=true; try { message=withContext(Dispatchers.IO) { block() }; library=withContext(Dispatchers.IO) { station(context,"load").jsonObject } } catch(e: Exception) { message="Không thể thực hiện: ${e.message}" } finally { busy=false } }
+        scope.launch { busy=true; try { message=withContext(Dispatchers.IO) { block() }; library=withContext(Dispatchers.IO) { station(context,"load").jsonObject } } catch(e: Exception) { message="Không thể thực hiện: ${e.message}" } finally { busy=false;staging=null } }
     }
     LaunchedEffect(Unit) { runCatching { withContext(Dispatchers.IO) { station(context,"load").jsonObject } }.onSuccess {library=it}.onFailure {message="Không đọc được thư viện: ${it.message}"}; while(true) { clock=SimpleDateFormat("HH:mm",Locale.getDefault()).format(Date());delay(1000) } }
     DisposableEffect(owner) {
@@ -157,12 +158,13 @@ fun StationShell(exit: () -> Unit) {
             check(coreFile(context,core).isFile) { "Chưa tải lõi $core. Mở Cài đặt → Lõi giả lập để tải" }
             verifyCore(context,coreFile(context,core),core)
             if(core in listOf("swanstation","mednafen_psx")) check(listOf("scph5500.bin","scph5501.bin","scph5502.bin").any {File(context.filesDir,"system/$it").isFile}) {"Thiếu BIOS PS1. Mở Cài đặt → BIOS và firmware để nhập bản trích xuất của bạn"}
-            val rom=stageGame(context,g)
+            withContext(Dispatchers.Main) { staging=StageProgress("Đang đọc thư mục nguồn…",0,0,0,0) }
+            val rom=stageGame(context,g) { update -> scope.launch(Dispatchers.Main) { staging=update } }
             withContext(Dispatchers.Main) { heartbeatAt=android.os.SystemClock.elapsedRealtime();emuPending=true;emulator.launch(Intent(context,EmuActivity::class.java).putExtra("core",coreFile(context,core).path).putExtra("rom",rom.path)) }
             null
         }
     }
-    BackHandler { when { message!=null->message=null;pending!=null->pending=null;options->options=false;page!="home"->page="home";else->page="control" } }
+    BackHandler { when { staging!=null -> Unit;message!=null->message=null;pending!=null->pending=null;options->options=false;page!="home"->page="home";else->page="control" } }
     Box(Modifier.fillMaxSize().background(Night).onPreviewKeyEvent { event -> if(event.nativeKeyEvent.keyCode in listOf(android.view.KeyEvent.KEYCODE_MENU,android.view.KeyEvent.KEYCODE_BUTTON_START)) { if(event.nativeKeyEvent.action==android.view.KeyEvent.ACTION_DOWN)page="control";true } else false }) {
         AmbientBackground()
         if(page=="home" && game!=null) {
@@ -282,6 +284,15 @@ fun StationShell(exit: () -> Unit) {
             }
         }
         if(busy) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
+        staging?.let { status -> ModalShade({}) {
+            Column(Modifier.align(Alignment.Center).widthIn(max=760.dp).background(Glass).padding(28.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
+                Text("Đang chuẩn bị thư mục trò chơi",fontSize=26.sp)
+                Text(status.file,color=Soft)
+                Text("${status.completed}/${status.count} tệp · ${status.bytes/1048576} / ${status.total/1048576} MB",color=Soft)
+                LinearProgressIndicator(progress={ if(status.total>0) (status.bytes.toDouble()/status.total).toFloat() else 0f },modifier=Modifier.fillMaxWidth())
+                Text("Sao chép và kiểm tra lại dữ liệu nguồn mỗi lần chơi. Chỉ mở lõi khi đã hoàn tất.",color=Soft)
+            }
+        } }
         if(options && game!=null) ModalShade({options=false}) {
             Column(Modifier.align(Alignment.CenterEnd).fillMaxHeight().width(350.dp).background(Glass).padding(25.dp).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(12.dp)) {
                 Text(game.str("title"),fontSize=24.sp)

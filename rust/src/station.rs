@@ -401,7 +401,7 @@ fn distance(a: &str, b: &str) -> usize {
 }
 
 pub fn command(root: &Path, action: &str, payload: Value) -> Result<Value, String> {
-    if action == "pspFiles" {
+    if action == "pspFiles" || action == "pspPlan" {
         let entry = payload["path"].as_str().ok_or("Thiếu đường dẫn PBP")?;
         let files = payload["files"].as_array().ok_or("Thiếu danh sách tệp")?;
         let safe = |path: &str| {
@@ -409,25 +409,85 @@ pub fn command(root: &Path, action: &str, payload: Value) -> Result<Value, Strin
                 && !path.contains(['\\', ':', '\0'])
                 && path.split('/').all(|p| !matches!(p, "" | "." | ".."))
         };
-        if !safe(entry) || !entry.to_lowercase().ends_with(".pbp") || files.len() > 20000 {
+        if !safe(entry)
+            || !(entry.to_lowercase().ends_with(".pbp")
+                || action == "pspPlan" && entry.to_lowercase().ends_with(".elf"))
+            || files.len() > 20000
+        {
             return Err("Đường dẫn PBP hoặc danh sách tệp không hợp lệ".into());
         }
-        let parent = entry
+        let mut parent = entry
             .rsplit_once('/')
             .map(|(p, _)| format!("{p}/"))
             .unwrap_or_default();
+        let paths = files
+            .iter()
+            .map(|file| {
+                file.as_str()
+                    .filter(|p| safe(p))
+                    .ok_or("Đường dẫn tệp đi kèm không an toàn")
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if !paths.contains(&entry) {
+            return Err("Không tìm thấy PBP trong thư mục; hãy quét lại".into());
+        }
+        let mut executable = entry.to_string();
+        if entry
+            .rsplit('/')
+            .next()
+            .unwrap_or("")
+            .eq_ignore_ascii_case("EBOOT.PBP")
+        {
+            let mut ancestor = parent.trim_end_matches('/').to_string();
+            while let Some((up, _)) = ancestor.rsplit_once('/') {
+                let prefix = if up.is_empty() {
+                    String::new()
+                } else {
+                    format!("{up}/")
+                };
+                if let Some(main) = paths
+                    .iter()
+                    .find(|p| p.eq_ignore_ascii_case(&format!("{prefix}EBOOT.PBP")))
+                {
+                    parent = prefix;
+                    executable = main.to_string();
+                    break;
+                }
+                ancestor = up.to_string();
+            }
+            if executable == entry
+                && parent.trim_end_matches('/').split('/').count() == 1
+                && !parent.is_empty()
+            {
+                if let Some(main) = paths.iter().find(|p| p.eq_ignore_ascii_case("EBOOT.PBP")) {
+                    parent.clear();
+                    executable = main.to_string();
+                }
+            }
+        }
         let mut required = std::collections::BTreeSet::new();
-        for file in files {
-            let path = file
-                .as_str()
-                .filter(|p| safe(p))
-                .ok_or("Đường dẫn tệp đi kèm không an toàn")?;
+        for path in paths {
             if path.starts_with(&parent) {
                 required.insert(path);
             }
         }
         if !required.contains(entry) {
             return Err("Không tìm thấy PBP trong thư mục; hãy quét lại".into());
+        }
+        if action == "pspPlan" {
+            let target = executable
+                .strip_prefix(&parent)
+                .ok_or("Thư mục PBP không hợp lệ")?;
+            let plan = required
+                .iter()
+                .map(|source| {
+                    json!({
+                        "source": if *source == executable { entry } else { source },
+                        "path": source.strip_prefix(&parent).unwrap()
+                    })
+                })
+                .collect::<Vec<_>>();
+            return Ok(json!({"root":parent,"entry":target,"files":plan}));
         }
         return Ok(json!(required));
     }
@@ -634,6 +694,43 @@ pub fn command(root: &Path, action: &str, payload: Value) -> Result<Value, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn psp_variant_plan_uses_main_data_and_selected_executable() {
+        let dir = tempfile::tempdir().unwrap();
+        for prefix in ["", "PSP/GAME/Demo/"] {
+            let files = json!([
+                format!("{prefix}EBOOT.PBP"),
+                format!("{prefix}ID1/PAK0.PAK"),
+                format!("{prefix}Kurok/PAK0.PAK"),
+                format!("{prefix}SLIM EBOOT/EBOOT.PBP"),
+                "Neighbor/EBOOT.PBP"
+            ]);
+            let plan = command(
+                dir.path(),
+                "pspPlan",
+                json!({"path":format!("{prefix}SLIM EBOOT/EBOOT.PBP"),"files":files}),
+            )
+            .unwrap();
+            assert_eq!(plan["root"], prefix);
+            assert_eq!(plan["entry"], "EBOOT.PBP");
+            assert!(plan["files"].as_array().unwrap().contains(
+                &json!({"source":format!("{prefix}SLIM EBOOT/EBOOT.PBP"),"path":"EBOOT.PBP"})
+            ));
+            assert!(plan["files"].as_array().unwrap().contains(
+                &json!({"source":format!("{prefix}ID1/PAK0.PAK"),"path":"ID1/PAK0.PAK"})
+            ));
+        }
+        let plan = command(
+            dir.path(),
+            "pspPlan",
+            json!({"path":"Other/SLIM/EBOOT.PBP","files":["EBOOT.PBP","Other/SLIM/EBOOT.PBP"]}),
+        )
+        .unwrap();
+        assert_eq!(plan["root"], "Other/SLIM/");
+        assert_eq!(plan["files"].as_array().unwrap().len(), 1);
+        let plan = command(dir.path(), "pspPlan", json!({"path":"Demo/EBOOT.ELF","files":["Demo/EBOOT.ELF","Demo/data.bin","Neighbor/EBOOT.PBP"]})).unwrap();
+        assert_eq!(plan["files"].as_array().unwrap().len(), 2);
+    }
     #[test]
     fn psp_folder_files_keep_layout_and_exclude_neighbor_games() {
         let dir = tempfile::tempdir().unwrap();

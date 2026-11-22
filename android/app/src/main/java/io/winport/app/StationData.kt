@@ -31,7 +31,7 @@ fun station(context: Context, action: String, payload: JsonElement = buildJsonOb
     Json.parseToJsonElement(StationNative.call(context.filesDir.path, action, payload.toString()))
 fun JsonObject.str(key: String, fallback: String = "") = this[key]?.jsonPrimitive?.contentOrNull ?: fallback
 fun obj(vararg values: Pair<String, String>) = buildJsonObject { values.forEach { put(it.first,it.second) } }
-data class Doc(val uri: Uri, val path: String, val directory: Boolean, val size: Long = -1)
+data class Doc(val uri: Uri, val path: String, val directory: Boolean, val size: Long = -1, val modified: Long = -1)
 
 private fun documentKey(context: Context, uri: Uri, size: Long): String = station(context,"documentKey",buildJsonObject {
     put("authority",uri.authority.orEmpty());put("id",if(uri.pathSegments.contains("document")) Docs.getDocumentId(uri) else Docs.getTreeDocumentId(uri));put("size",size)
@@ -51,7 +51,7 @@ fun documents(context: Context, tree: Uri): List<Doc> {
         check(depth < 32) { "Thư mục quá sâu (tối đa 31 cấp)" }
         check(visited.add(id)) { "Nhà cung cấp trả về vòng lặp thư mục" }
         val children = Docs.buildChildDocumentsUriUsingTree(tree, id)
-        context.contentResolver.query(children,arrayOf(Docs.Document.COLUMN_DOCUMENT_ID,Docs.Document.COLUMN_DISPLAY_NAME,Docs.Document.COLUMN_MIME_TYPE,Docs.Document.COLUMN_SIZE),null,null,null)?.use { c ->
+        context.contentResolver.query(children,arrayOf(Docs.Document.COLUMN_DOCUMENT_ID,Docs.Document.COLUMN_DISPLAY_NAME,Docs.Document.COLUMN_MIME_TYPE,Docs.Document.COLUMN_SIZE,Docs.Document.COLUMN_LAST_MODIFIED),null,null,null)?.use { c ->
             val dirs = mutableListOf<Pair<String,String>>()
             while (c.moveToNext()) {
                 check(result.size < 20000) { "Thư mục có hơn 20.000 mục; hãy chọn thư mục nhỏ hơn" }
@@ -59,7 +59,7 @@ fun documents(context: Context, tree: Uri): List<Doc> {
                 check(name != "." && name != ".." && '/' !in name && '\\' !in name) { "Tên tệp không an toàn" }
                 val path=if(parent.isEmpty()) name else "$parent/$name"
                 val directory=c.getString(2)==Docs.Document.MIME_TYPE_DIR
-                result.add(Doc(Docs.buildDocumentUriUsingTree(tree,child),path,directory,if(c.isNull(3)) -1 else c.getLong(3)))
+                result.add(Doc(Docs.buildDocumentUriUsingTree(tree,child),path,directory,if(c.isNull(3)) -1 else c.getLong(3),if(c.isNull(4)) -1 else c.getLong(4)))
                 if(directory) dirs.add(child to path)
             }
             dirs.forEach { walk(it.first,it.second,depth+1) }
@@ -170,11 +170,39 @@ fun launchExternal(context: Context, game: JsonObject, packageName: String) {
         Toast.makeText(context,"Ứng dụng không nhận tệp này; đã mở ứng dụng để bạn chọn trò chơi",Toast.LENGTH_LONG).show()
     }
 }
-fun stageGame(context: Context, game: JsonObject): File {
+fun stageGame(context: Context, game: JsonObject, progress: (StageProgress) -> Unit = {}): File {
     val uri=Uri.parse(game.str("uri"))
-    val path=game.str("path")
+    val path=game.str("path").ifBlank {
+        context.contentResolver.query(uri,arrayOf(OpenableColumns.DISPLAY_NAME),null,null,null)?.use { if(it.moveToFirst()) it.getString(0) else "" }.orEmpty()
+    }
     val pspFolder=game.str("system")=="PSP" && path.endsWith(".pbp",true)
-    if(path.endsWith(".cue",true)||path.endsWith(".m3u",true)||pspFolder) {
+    val pspTree=game.str("system")=="PSP" && game.str("folder").isNotBlank() && !path.endsWith(".iso",true) && !path.endsWith(".cso",true)
+    if(pspFolder || pspTree) {
+        check(game.str("folder").isNotBlank()) { "PBP cần cả thư mục dữ liệu. Hãy dùng Quét thư mục và chọn thư mục gốc chứa EBOOT.PBP cùng dữ liệu, không chỉ SLIM EBOOT." }
+        try {
+            val tree=Uri.parse(game.str("folder"))
+            val all=documents(context,tree)
+            val docs=all.filter { !it.directory }.associateBy { it.path }
+            check(!isolatedSlimEboot(Docs.getTreeDocumentId(tree),docs.keys)) {
+                "Bạn chỉ chọn SLIM EBOOT nên thiếu dữ liệu chung. Hãy Quét thư mục trò chơi chứa cả EBOOT.PBP, ID1, Kurok và MP3."
+            }
+            val selected=docs.values.firstOrNull { Docs.getDocumentId(it.uri)==Docs.getDocumentId(uri) }
+                ?: error("Không tìm thấy EBOOT trong thư mục được cấp quyền; hãy quét lại thư mục gốc")
+            val plan=station(context,"pspPlan",buildJsonObject { put("path",selected.path);put("files",JsonArray(docs.keys.map(::JsonPrimitive))) }).jsonObject
+            val root=plan.str("root")
+            val files=plan.getValue("files").jsonArray.map { item -> item.jsonObject.let { StageFile(it.str("source"),it.str("path"),docs.getValue(it.str("source")).size) } }
+            val key=MessageDigest.getInstance("SHA-256").digest(game.str("uri").toByteArray()).joinToString("") {"%02x".format(it)}
+            val result=GameStaging.copy(File(context.filesDir,"roms/set-$key"),files,plan.str("entry"),
+                directories=all.filter { it.directory && it.path.startsWith(root) }.map { it.path.removePrefix(root) },
+                open={ name -> context.contentResolver.openInputStream(docs.getValue(name).uri) ?: error("Không mở được $name") },
+                verifySource={ check(documents(context,tree).filter { it.path.startsWith(root) }.toSet()==all.filter { it.path.startsWith(root) }.toSet()) { "Thư mục nguồn thay đổi trong khi sao chép; hãy thử lại" } },progress=progress)
+            android.util.Log.i("WinportStaging","PSP ready: entry=$result root=$root files=${files.size} bytes=${files.sumOf {it.size}}")
+            return result
+        } catch(e: Exception) {
+            throw IllegalStateException("Không chuẩn bị được thư mục PSP; chưa khởi động trò chơi. ${e.message}. Hãy kiểm tra dung lượng trống, cấp lại quyền và Quét thư mục gốc chứa cả EBOOT và dữ liệu.",e)
+        }
+    }
+    if(path.endsWith(".cue",true)||path.endsWith(".m3u",true)) {
         check(game.str("folder").isNotBlank()) { "PBP/CUE/M3U cần quét thư mục để có quyền đọc các tệp đi kèm" }
         val docs=documents(context,Uri.parse(game.str("folder"))).filter { !it.directory }.associateBy {it.path}
         val required=linkedSetOf<String>()
@@ -191,10 +219,7 @@ fun stageGame(context: Context, game: JsonObject): File {
                 }
             }
         }
-        if(pspFolder) {
-            val files=station(context,"pspFiles",buildJsonObject { put("path",path);put("files",JsonArray(docs.keys.map(::JsonPrimitive))) }).jsonArray
-            files.forEach { required.add(it.jsonPrimitive.content) }
-        } else collect(path)
+        collect(path)
         val key=MessageDigest.getInstance("SHA-256").digest(game.str("uri").toByteArray()).joinToString("") {"%02x".format(it)}
         val dir=File(context.filesDir,"roms/set-$key").apply {mkdirs()}
         for(name in required) {
