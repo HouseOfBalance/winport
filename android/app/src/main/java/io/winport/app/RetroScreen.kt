@@ -167,7 +167,8 @@ internal fun downloadCore(context: Context, name: String): File {
     val archive = File(context.cacheDir, "core-download.zip")
     val staging = File(target.path + ".part")
     try {
-        val connection = URL("https://buildbot.libretro.com/nightly/android/latest/${abi()}/${target.name}.zip").openConnection() as java.net.HttpURLConnection
+        val pin=station(context,"coreManifest").jsonArray.first {it.jsonObject.str("abi")==abi() && it.jsonObject.str("name")==name}.jsonObject
+        val connection = URL(pin.str("url")).openConnection() as java.net.HttpURLConnection
         connection.connectTimeout = 15000; connection.readTimeout = 30000
         try {
             require(connection.responseCode == 200) { "Buildbot HTTP ${connection.responseCode}: $name / ${abi()}" }
@@ -193,6 +194,7 @@ internal fun downloadCore(context: Context, name: String): File {
         check(found) { "Archive does not contain ${target.name}" }
         val header = ByteArray(4); staging.inputStream().use { check(it.read(header) == 4) }
         check(header.contentEquals(byteArrayOf(0x7f, 0x45, 0x4c, 0x46))) { "Downloaded core is not ELF" }
+        verifyCore(context,staging,name)
         if (name == "ppsspp") downloadPspAssets(context)
         java.nio.file.Files.move(staging.toPath(), target.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
         return target
@@ -201,7 +203,7 @@ internal fun downloadCore(context: Context, name: String): File {
 
 internal fun importRom(context: Context, uri: Uri): File {
     val name = context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c -> if (c.moveToFirst()) c.getString(0) else null } ?: error("No ROM filename")
-    require(name.substringAfterLast('.').lowercase() in listOf("exe", "ps-exe", "bin", "iso", "img", "chd", "pbp", "elf", "prx", "cso", "isz")) { "Choose single-file PS1, PSP or PS2 content (.exe, .elf, .pbp, .iso, .chd, .cso). Multi-file CUE import comes later." }
+    require(name.substringAfterLast('.').lowercase() in listOf("exe", "ps-exe", "bin", "iso", "img", "chd", "pbp", "elf", "prx", "cso", "isz")) { "Định dạng không hỗ trợ. Chọn EXE/ELF/PBP/ISO/CHD/CSO; CUE/M3U cần quét thư mục." }
     val temp = File.createTempFile("rom-", ".part", context.cacheDir)
     try {
         val digest = MessageDigest.getInstance("SHA-256")
@@ -221,6 +223,18 @@ private fun gameSaveKey(rom: File): String = if(rom.extension.lowercase() in lis
     MessageDigest.getInstance("SHA-256").digest(rom.absolutePath.toByteArray()).joinToString("") { "%02x".format(it) }
 } else rom.parentFile!!.name
 
+internal fun verifyCore(context: Context, file: File, name: String = file.name.removeSuffix("_libretro_android.so")) {
+    station(context,"verifyCore",obj("abi" to abi(),"name" to name,"path" to file.path))
+}
+
+object EmuProgress {
+    @Volatile var changed = android.os.SystemClock.elapsedRealtime()
+    @Volatile var phase = "starting"
+    @Volatile var checkpoint: (() -> Unit)? = null
+    @Volatile var teardownReady: (() -> Unit)? = null
+    fun enter(value: String) { phase=value;changed=android.os.SystemClock.elapsedRealtime() }
+}
+
 class RetroSession(private val context: Context, private val core: File, private val rom: File,
     private val status: (String) -> Unit, private val ended: (String?) -> Unit) {
     @Volatile private var alive = true
@@ -229,20 +243,23 @@ class RetroSession(private val context: Context, private val core: File, private
     @Volatile private var paused = false
     private val commands = ConcurrentLinkedQueue<String>()
     private val main = Handler(Looper.getMainLooper())
-    fun action(command: String) { commands.add(command) }
-    fun close() { alive = false }
+    fun action(command: String) { if(command!="checkpoint" || !commands.contains(command)) commands.add(command) }
+    fun close() { commands.add("exit") }
     fun start() {
         Thread({
             var failure: String? = null
+            var checkpointed = false
             try {
                 while (alive && !readySurface) Thread.sleep(10)
                 if (!alive) return@Thread
+                verifyCore(context,core)
                 val coreHash = MessageDigest.getInstance("SHA-256").digest(core.readBytes()).take(12).joinToString("") { "%02x".format(it) }
                 val saves = File(context.filesDir, "saves/$coreHash/${gameSaveKey(rom)}")
                 val info = Json.parseToJsonElement(RetroNative.command("start", buildJsonObject {
                     put("core", core.path); put("rom", rom.path); put("system", File(context.filesDir, "system").path); put("saves", saves.path)
                 }.toString())).jsonObject
                 sampleRate = info.getValue("sampleRate").jsonPrimitive.int
+                EmuProgress.checkpoint={ action("checkpoint") }
                 RetroInput.active = true; RetroInput.paused = false
                 main.post { status("${info.getValue("name").jsonPrimitive.content} · ${info.getValue("fps")} Hz · $sampleRate Hz âm thanh") }
                 while (alive) {
@@ -251,8 +268,18 @@ class RetroSession(private val context: Context, private val core: File, private
                         try {
                             when (command) {
                                 "pause", "resume" -> { paused = command == "pause"; RetroInput.paused = paused; RetroInput.clear(); RetroNative.command("pause", paused.toString()) }
+                                "checkpoint", "exit" -> {
+                                    EmuProgress.enter("checkpoint")
+                                    val auto=context.getSharedPreferences("state-options",Context.MODE_PRIVATE).getBoolean("autosave",false)
+                                    val result=RetroNative.command("checkpoint","{\"auto\":$auto}")
+                                    checkpointed=true
+                                    android.util.Log.i("WinportCheckpoint", "$command $result")
+                                    if(command=="exit") { alive=false;EmuProgress.teardownReady?.invoke() }
+                                    EmuProgress.enter("idle")
+                                }
                                 else -> {
                                     val action = command.substringBefore(':')
+                                    if(action=="load") checkpointed=false
                                     val slot = command.substringAfter(':', "1").toIntOrNull() ?: 1
                                     val result = RetroNative.command(action, "{\"slot\":$slot}")
                                     android.util.Log.i("WinportState", "$command $result")
@@ -260,14 +287,29 @@ class RetroSession(private val context: Context, private val core: File, private
                                 }
                             }
                         } catch (e: Exception) { main.post { status(e.message ?: "Không thực hiện được thao tác") } }
+                        if(!alive) break
                     }
+                    if(!alive) break
                     RetroNative.command("surfaceSync")
-                    if (readySurface && !paused) RetroNative.command("run") else Thread.sleep(10)
+                    if (readySurface && !paused) {
+                        EmuProgress.enter("run")
+                        checkpointed=false
+                        RetroNative.command("run")
+                        EmuProgress.enter("idle")
+                    } else { EmuProgress.enter("idle");Thread.sleep(10) }
                 }
             } catch (e: Exception) { failure = e.message ?: "Không chạy được phiên giả lập" }
             finally {
                 alive = false; RetroInput.active = false; RetroInput.clear()
-                try { RetroNative.command("close") } catch (e: Exception) { failure = "Không lưu được SRAM: ${e.message}" }
+                EmuProgress.checkpoint=null
+                try { if(sampleRate>0) {
+                    EmuProgress.enter("checkpoint")
+                    val auto=context.getSharedPreferences("state-options",Context.MODE_PRIVATE).getBoolean("autosave",false)
+                    if(!checkpointed) RetroNative.command("checkpoint","{\"auto\":$auto}")
+                    EmuProgress.teardownReady?.invoke()
+                    EmuProgress.enter("teardown")
+                    RetroNative.command("close")
+                } } catch (e: Exception) { failure = "${failure.orEmpty()} Không lưu được dữ liệu an toàn: ${e.message}" }
                 main.post { ended(failure) }
             }
         }, "libretro-run").start()
@@ -431,7 +473,7 @@ fun EmulationScreen(core: File, rom: File, requestExit: () -> Unit = {}, exit: (
     BackHandler { pause() }
     DisposableEffect(session) {
         session.start()
-        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_PAUSE) pause() }
+        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_PAUSE) { pause();session.action("checkpoint") }; if(event==Lifecycle.Event.ON_STOP) session.action("checkpoint") }
         owner.lifecycle.addObserver(observer)
         onDispose { owner.lifecycle.removeObserver(observer); session.close(); RetroNative.surface(null) }
     }
@@ -469,7 +511,7 @@ fun EmulationScreen(core: File, rom: File, requestExit: () -> Unit = {}, exit: (
                     ConsoleButton(if (leaving) "Đang về trang chủ…" else "Thoát về trang chủ", {
                         if (!leaving) {
                             leaving = true
-                            if (statePrefs.getBoolean("autosave", false)) { save(0); Handler(Looper.getMainLooper()).postDelayed({ session.close() }, 500) } else session.close()
+                            session.close()
                             requestExit()
                         }
                     }, enabled = !leaving)

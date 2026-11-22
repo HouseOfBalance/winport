@@ -38,7 +38,7 @@ import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.*
 
-private val systems = listOf("PS1","PSP","PS2","PS3","PS4")
+private val systems = listOf("PS1","PSP","PS2","PS3")
 private fun preferences(lib: JsonObject) = lib["prefs"] as? JsonObject ?: buildJsonObject {}
 private fun md5(file: File): String {
     val digest=MessageDigest.getInstance("MD5")
@@ -80,7 +80,10 @@ fun StationShell(exit: () -> Unit) {
     var pending by remember { mutableStateOf<JsonObject?>(null) }
     var options by remember { mutableStateOf(false) }
     var clock by remember { mutableStateOf("") }
-    val games=(library["games"] as? JsonArray)?.map { it.jsonObject } ?: emptyList()
+    var emuPending by remember { mutableStateOf(false) }
+    var emuPid by remember { mutableIntStateOf(0) }
+    var heartbeatAt by remember { mutableLongStateOf(0) }
+    val games=(library["games"] as? JsonArray)?.map { it.jsonObject }?.filter {it.str("system")!="PS4"} ?: emptyList()
     val game=games.find { it.str("uri")==selected } ?: games.firstOrNull()
     fun job(block: suspend () -> String?) {
         if(busy) return
@@ -90,6 +93,23 @@ fun StationShell(exit: () -> Unit) {
     DisposableEffect(owner) {
         val observer=LifecycleEventObserver { _,event -> if(event==Lifecycle.Event.ON_RESUME) scope.launch { runCatching { withContext(Dispatchers.IO) { station(context,"load").jsonObject } }.onSuccess { library=it } } }
         owner.lifecycle.addObserver(observer); onDispose { owner.lifecycle.removeObserver(observer) }
+    }
+    DisposableEffect(Unit) {
+        val receiver=object: android.content.BroadcastReceiver() {
+            override fun onReceive(c: Context, intent: Intent) {
+                heartbeatAt=android.os.SystemClock.elapsedRealtime()
+                emuPid=intent.getIntExtra("pid",0)
+                if(intent.getBooleanExtra("stalled",false)) message="Core bị treo… Không phản hồi quá 5 giây. Quay lại phiên giả lập để chờ thêm hoặc buộc thoát. Dữ liệu chưa lưu có thể mất."
+            }
+        }
+        androidx.core.content.ContextCompat.registerReceiver(context,receiver,android.content.IntentFilter("io.winport.app.EMU_HEARTBEAT"),androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
+        onDispose { context.unregisterReceiver(receiver) }
+    }
+    LaunchedEffect(emuPending) {
+        while(emuPending) {
+            delay(1000)
+            if(android.os.SystemClock.elapsedRealtime()-heartbeatAt>5000) message="Core bị treo… Phiên giả lập không gửi nhịp phản hồi quá 5 giây. Buộc thoát có thể mất dữ liệu chưa lưu."
+        }
     }
     val folderPicker=rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri -> if(uri!=null) job {
         context.contentResolver.takePersistableUriPermission(uri,Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -101,7 +121,9 @@ fun StationShell(exit: () -> Unit) {
         context.contentResolver.takePersistableUriPermission(uri,Intent.FLAG_GRANT_READ_URI_PERMISSION)
         val name=context.contentResolver.query(uri,arrayOf(OpenableColumns.DISPLAY_NAME),null,null,null)?.use { if(it.moveToFirst()) it.getString(0) else "Trò chơi" } ?: "Trò chơi"
         val detected=runCatching { detect(context,Doc(uri,name,false)) }.getOrNull()
-        withContext(Dispatchers.Main) { pending=buildJsonObject { put("uri",uri.toString());put("title",detected?.str("title") ?: name.substringBeforeLast('.'));put("system",detected?.str("system","PS1") ?: "PS1");put("serial",detected?.str("serial") ?: "") } }
+        check(detected?.str("system")!="PS4") {"Định dạng trò chơi chưa được hỗ trợ"}
+        val key=runCatching { documentKey(context,uri) }.getOrDefault("")
+        withContext(Dispatchers.Main) { pending=buildJsonObject { put("document_key",key);put("uri",uri.toString());put("title",detected?.str("title") ?: name.substringBeforeLast('.'));put("system",detected?.str("system","PS1") ?: "PS1");put("serial",detected?.str("serial") ?: "") } }
         null
     } }
     val artPicker=rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> val g=game; if(uri!=null && g!=null) job { customArt(context,uri,g);"Đã lưu ảnh tùy chỉnh" } }
@@ -109,7 +131,7 @@ fun StationShell(exit: () -> Unit) {
         val sourceName=context.contentResolver.query(uri,arrayOf(OpenableColumns.DISPLAY_NAME),null,null,null)?.use { if(it.moveToFirst()) it.getString(0) else null } ?: error("Không đọc được tên tệp")
         val name=if(system=="PS1") sourceName.lowercase(Locale.ROOT) else sourceName
         check('/' !in name && '\\' !in name && name !in listOf(".","..")) { "Tên tệp không hợp lệ" }
-        val dir=File(context.filesDir,if(system=="PS3"||system=="PS4") "system/$system" else "system").apply { mkdirs() }
+        val dir=File(context.filesDir,if(system=="PS3") "system/$system" else "system").apply { mkdirs() }
         val temp=File.createTempFile("firmware-",".part",context.cacheDir)
         try {
             val digest=MessageDigest.getInstance("MD5")
@@ -122,17 +144,21 @@ fun StationShell(exit: () -> Unit) {
         } finally { temp.delete() }
     } }
     val emulator=rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        emuPending=false
         result.data?.getStringExtra("error")?.let { message="Phiên giả lập kết thúc: $it" }
+        if(result.resultCode!=android.app.Activity.RESULT_OK && result.data?.getStringExtra("error")==null) message="Core gặp lỗi hoặc phiên đã bị buộc thoát. Dữ liệu chưa lưu có thể mất."
     }
     fun launch(g: JsonObject) {
         val sys=g.str("system")
-        if(sys=="PS3"||sys=="PS4") {
-            try { launchExternal(context,g,preferences(library).str("external_$sys")) } catch(e:Exception) { message=if(sys=="PS4") "Chưa có emulator PS4 cho Android chạy được — game được giữ trong thư viện" else "Chưa chọn emulator PS3 trong Cài đặt: ${e.message}" }
+        if(sys=="PS3") {
+            try { launchExternal(context,g,preferences(library).str("external_$sys")) } catch(e:Exception) { message="Chưa chọn emulator PS3 trong Cài đặt: ${e.message}" }
         } else job {
             val core=when(sys) {"PSP"->"ppsspp";"PS2"->"play";else->preferences(library).str("ps1core","pcsx_rearmed")}
             check(coreFile(context,core).isFile) { "Chưa tải lõi $core. Mở Cài đặt → Lõi giả lập để tải" }
+            verifyCore(context,coreFile(context,core),core)
+            if(core in listOf("swanstation","mednafen_psx")) check(listOf("scph5500.bin","scph5501.bin","scph5502.bin").any {File(context.filesDir,"system/$it").isFile}) {"Thiếu BIOS PS1. Mở Cài đặt → BIOS và firmware để nhập bản trích xuất của bạn"}
             val rom=stageGame(context,g)
-            withContext(Dispatchers.Main) { emulator.launch(Intent(context,EmuActivity::class.java).putExtra("core",coreFile(context,core).path).putExtra("rom",rom.path)) }
+            withContext(Dispatchers.Main) { heartbeatAt=android.os.SystemClock.elapsedRealtime();emuPending=true;emulator.launch(Intent(context,EmuActivity::class.java).putExtra("core",coreFile(context,core).path).putExtra("rom",rom.path)) }
             null
         }
     }
@@ -171,9 +197,8 @@ fun StationShell(exit: () -> Unit) {
                     Spacer(Modifier.height(20.dp))
                     Text(game?.str("title") ?: "",fontSize=36.sp,fontWeight=FontWeight.Light,maxLines=1)
                     Text("${game?.str("system")}  ·  ${game?.str("serial").orEmpty()}",color=Soft)
-                    if(game?.str("system")=="PS4" && preferences(library).str("external_PS4").isBlank()) Text("Chưa có emulator PS4 cho Android chạy được — game được giữ trong thư viện",color=Ice,fontSize=16.sp)
                     Row(Modifier.padding(top=14.dp),horizontalArrangement=Arrangement.spacedBy(12.dp)) {
-                        ConsoleButton("Chơi",{game?.let(::launch)},primary=true,mark=Mark.Play,enabled=!busy)
+                        ConsoleButton("Chơi",{game?.let(::launch)},primary=true,mark=Mark.Play,enabled=!busy&&!emuPending)
                         ConsoleButton("Tùy chọn",{options=true},mark=Mark.More)
                         ConsoleButton("Trung tâm điều khiển",{page="control"},mark=Mark.Home)
                     }
@@ -185,7 +210,7 @@ fun StationShell(exit: () -> Unit) {
                     MenuRow("Lõi giả lập","PS1 · PSP · PS2, chỉ tải khi bạn yêu cầu",Mark.Chip) {page="cores"}
                     MenuRow("BIOS và firmware","Hướng dẫn, nhập tệp, đối chiếu MD5",Mark.Info) {page="bios"}
                     MenuRow("Tay cầm và điều khiển","Gán nút, vùng chết, bàn phím ảo",Mark.Tune) {page="controls"}
-                    MenuRow("Emulator ngoài","Chọn ứng dụng cho PS3 và PS4",Mark.Box) {page="external"}
+                    MenuRow("Emulator ngoài","Chọn ứng dụng cho PS3",Mark.Box) {page="external"}
                 }
             } else if(page=="bios") {
                 PageTitle("BIOS và firmware","CHỈ DÙNG BẢN SAO HỢP PHÁP CỦA BẠN",{page="settings"})
@@ -199,7 +224,7 @@ fun StationShell(exit: () -> Unit) {
                             "PSP"->"PPSSPP dùng HLE, không cần BIOS Sony. Tải lõi sẽ tải bộ tài nguyên mã nguồn mở PPSSPP và phông thay thế."
                             "PS2"->"Play! dùng HLE nên không cần BIOS PS2. Những lõi khác như PCSX2 có thể cần ROM0/BIOS .bin do bạn tự trích xuất; tên/vùng/phiên bản tùy lõi. Winport hiện không chạy PCSX2."
                             "PS3"->"Cần emulator ngoài tương thích và firmware PS3UPDAT.PUP. Tham khảo trang hỗ trợ chính thức Sony. Tệp nhập ở đây không tự cài vào emulator ngoài."
-                            else->"Chưa có emulator PS4 cho Android chạy được. Thư viện chỉ giữ thông tin trò chơi; không có BIOS nào biến điện thoại thành PS4. Không tải firmware/khóa không rõ nguồn."
+                            else->"Hãy nhập firmware hợp pháp theo hướng dẫn của emulator."
                         })
                         if(system=="PS1") listOf("scph5500.bin","scph5501.bin","scph5502.bin").forEach { name ->
                             val file=File(context.filesDir,"system/$name")
@@ -236,12 +261,11 @@ fun StationShell(exit: () -> Unit) {
                             if(core !in listOf("ppsspp","play")) ConsoleButton(if(preferences(library).str("ps1core","pcsx_rearmed")==core) "Đang dùng cho PS1" else "Chọn cho PS1",{job {station(context,"prefs",JsonObject(preferences(library)+mapOf("ps1core" to JsonPrimitive(core))));null}},enabled=!busy)
                         }
                     }
-                    Text("Nightly từ libretro buildbot không được ghim phiên bản. Lõi chạy mã native với quyền của ứng dụng; chỉ dùng nguồn bạn tin cậy. PPSSPP tải thêm tài nguyên mã nguồn mở, không phải BIOS Sony.",color=Soft)
+                    Text("Lõi được ghim SHA-256. Nếu nightly thay đổi, ứng dụng từ chối tải cho đến khi cập nhật manifest. Lõi chạy mã native với quyền ứng dụng. Tài nguyên PPSSPP không phải BIOS Sony.",color=Soft)
                 }
             } else if(page=="external") {
                 PageTitle("Emulator ngoài","KHẢ NĂNG CHẠY PHỤ THUỘC ỨNG DỤNG BÊN NGOÀI",{page="settings"})
-                Row(horizontalArrangement=Arrangement.spacedBy(12.dp)) { listOf("PS3","PS4").forEach { s->ConsoleButton(s,{system=s},primary=system==s) } }
-                val sys=if(system=="PS4") "PS4" else "PS3"
+                val sys="PS3"
                 Text("$sys · ${preferences(library).str("external_$sys","Chưa chọn ứng dụng")}",color=Ice)
                 val apps=remember { context.packageManager.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER),0).filter {it.activityInfo.packageName!=context.packageName}.distinctBy {it.activityInfo.packageName}.sortedBy {it.loadLabel(context.packageManager).toString()} }
                 Column(Modifier.verticalScroll(rememberScrollState())) {
@@ -273,10 +297,16 @@ fun StationShell(exit: () -> Unit) {
                 Text("Thông tin trò chơi",fontSize=30.sp,fontWeight=FontWeight.Light)
                 OutlinedTextField(title,{title=it},label={Text("Tên trò chơi")},modifier=Modifier.fillMaxWidth())
                 Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) { systems.forEach { s->ConsoleButton(s,{sys=s},primary=sys==s) } }
-                Text("Nếu định dạng nén/ISO chưa rõ, hãy chọn đúng hệ máy. Thư mục PS3/PS4 được thêm bằng Quét thư mục.",color=Soft,fontSize=12.sp)
+                Text("Nếu định dạng nén/ISO chưa rõ, hãy chọn đúng hệ máy. Thư mục PS3 được thêm bằng Quét thư mục.",color=Soft,fontSize=12.sp)
                 ConsoleButton("Lưu",{val g=JsonObject(data+mapOf("title" to JsonPrimitive(title),"system" to JsonPrimitive(sys)));pending=null;job {station(context,"upsert",g);null}},enabled=title.isNotBlank())
             }
         } }
-        message?.let { text -> ModalShade({message=null}) { Column(Modifier.align(Alignment.Center).widthIn(max=760.dp).fillMaxHeight(.8f).background(Glass).padding(26.dp).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(15.dp)) { Text("Thông báo",fontSize=28.sp);Text(text,color=Soft);ConsoleButton("Đóng",{message=null},primary=true) } } }
+        message?.let { text -> ModalShade({message=null}) { Column(Modifier.align(Alignment.Center).widthIn(max=760.dp).fillMaxHeight(.8f).background(Glass).padding(26.dp).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(15.dp)) { Text("Thông báo",fontSize=28.sp);Text(text,color=Soft)
+            if(text.contains("Core bị treo")) ConsoleButton("Buộc thoát phiên",{
+                val manager=context.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+                if(manager.runningAppProcesses?.any {it.pid==emuPid && it.uid==android.os.Process.myUid() && it.processName=="${context.packageName}:emu"}==true) android.os.Process.killProcess(emuPid)
+                emuPending=false;message=null
+            })
+            ConsoleButton("Đóng",{message=null},primary=true) } } }
     }
 }

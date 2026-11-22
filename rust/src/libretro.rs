@@ -483,7 +483,7 @@ unsafe extern "C" fn video(data: *const c_void, w: u32, h: u32, pitch: usize) {
     }
 }
 unsafe extern "C" fn audio(left: i16, right: i16) {
-    if let Ok(mut c) = CALLBACKS.lock() {
+    if let Ok(mut c) = CALLBACKS.try_lock() {
         if let Some(c) = c.as_mut() {
             c.push_audio(&[left, right]);
         }
@@ -491,7 +491,7 @@ unsafe extern "C" fn audio(left: i16, right: i16) {
 }
 unsafe extern "C" fn audio_batch(data: *const i16, frames: usize) -> usize {
     if !data.is_null() && frames <= 192_000 {
-        if let Ok(mut c) = CALLBACKS.lock() {
+        if let Ok(mut c) = CALLBACKS.try_lock() {
             if let Some(c) = c.as_mut() {
                 c.push_audio(slice::from_raw_parts(data, frames * 2));
             }
@@ -544,9 +544,15 @@ fn cpath(path: &Path) -> Result<CString, String> {
     CString::new(path.to_string_lossy().as_bytes()).map_err(|e| e.to_string())
 }
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
     let staging = path.with_extension("tmp");
-    fs::write(&staging, bytes).map_err(|e| e.to_string())?;
-    fs::rename(staging, path).map_err(|e| e.to_string())
+    let mut file = fs::File::create(&staging).map_err(|e| e.to_string())?;
+    file.write_all(bytes).map_err(|e| e.to_string())?;
+    file.sync_all().map_err(|e| e.to_string())?;
+    fs::rename(staging, path).map_err(|e| e.to_string())?;
+    fs::File::open(path.parent().ok_or("Missing save directory")?)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|e| e.to_string())
 }
 
 pub struct Session {
@@ -714,7 +720,7 @@ impl Session {
             meta: ptr::null(),
         };
         if !load(&game) {
-            return Err("Core rejected the ROM. Check its format and any BIOS requirements; PCSX ReARMed supports HLE without Sony BIOS.".into());
+            return Err("Lõi không nạp được trò chơi: định dạng không hỗ trợ, tệp hỏng hoặc thiếu BIOS. Kiểm tra BIOS trong Cài đặt; PCSX ReARMed hỗ trợ HLE.".into());
         }
         session.loaded = true;
         let controller = CALLBACKS.lock().unwrap().as_ref().unwrap().controller;
@@ -821,6 +827,21 @@ impl Session {
             Ok(size)
         }
     }
+    pub fn checkpoint(&mut self, auto: bool) -> Result<serde_json::Value, String> {
+        self.save_sram()?;
+        let bytes = if auto {
+            let previous = self.save_path.clone();
+            self.select_slot(0)?;
+            let result = self.save_state();
+            self.save_path = previous;
+            result?
+        } else {
+            0
+        };
+        Ok(
+            serde_json::json!({"durable":true,"stateBytes":bytes,"sramBytes":unsafe {(self.memory_size)(0)}}),
+        )
+    }
     pub fn select_slot(&mut self, slot: u64) -> Result<(), String> {
         if slot > 4 {
             return Err("Ô lưu phải từ 0 đến 4".into());
@@ -919,16 +940,28 @@ impl Drop for Session {
             graphics.notify_destroy();
         }
         unsafe {
+            winport_retro_log(1, c"Teardown: retro_unload_game\n".as_ptr());
             if self.loaded {
                 (self.unload)();
             }
+            winport_retro_log(1, c"Teardown: retro_deinit\n".as_ptr());
             if self.initialized {
                 (self.deinit)();
             }
         }
         #[cfg(target_os = "android")]
         self.graphics.take();
+        unsafe {
+            winport_retro_log(1, c"Teardown: EGL released\n".as_ptr());
+        }
         *CALLBACKS.lock().unwrap() = None;
+    }
+}
+
+#[cfg(target_os = "android")]
+pub(crate) fn teardown_trace(message: &CStr) {
+    unsafe {
+        winport_retro_log(1, message.as_ptr());
     }
 }
 
@@ -1022,6 +1055,33 @@ pub mod window {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn audio_callbacks_drop_instead_of_waiting() {
+        let guard = CALLBACKS.lock().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let samples = [1i16, 2];
+            unsafe {
+                audio(1, 2);
+                tx.send(audio_batch(samples.as_ptr(), 1)).unwrap();
+            }
+        });
+        let result = rx.recv_timeout(Duration::from_secs(1));
+        drop(guard);
+        worker.join().unwrap();
+        assert_eq!(result.unwrap(), 1);
+    }
+    #[test]
+    fn durable_atomic_save_normal_empty_and_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("slot-0.state");
+        atomic_write(&path, b"state").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"state");
+        atomic_write(&path, b"").unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().len(), 0);
+        assert!(!path.with_extension("tmp").exists());
+        assert!(atomic_write(&dir.path().join("absent/state"), b"bad").is_err());
+    }
     #[test]
     fn formats_and_padded_pitch() {
         for (format, pixel) in [(0, 0x7c00u16), (2, 0xf800)] {

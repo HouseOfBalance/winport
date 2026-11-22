@@ -23,6 +23,9 @@ static _Thread_local char error[256];
 extern void wp_gl_viewport(unsigned, unsigned, float, int *);
 
 const char *wp_gl_error(void) { return error; }
+bool wp_gl_make_current(Graphics *g) {
+    return g && eglMakeCurrent(g->display, g->surface, g->surface, g->context);
+}
 static bool fail(const char *operation) {
     snprintf(error, sizeof(error), "%s: EGL 0x%x GL 0x%x", operation, eglGetError(), glGetError());
     __android_log_write(ANDROID_LOG_ERROR, "WinportGL", error);

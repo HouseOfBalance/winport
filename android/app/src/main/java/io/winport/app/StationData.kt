@@ -31,7 +31,18 @@ fun station(context: Context, action: String, payload: JsonElement = buildJsonOb
     Json.parseToJsonElement(StationNative.call(context.filesDir.path, action, payload.toString()))
 fun JsonObject.str(key: String, fallback: String = "") = this[key]?.jsonPrimitive?.contentOrNull ?: fallback
 fun obj(vararg values: Pair<String, String>) = buildJsonObject { values.forEach { put(it.first,it.second) } }
-data class Doc(val uri: Uri, val path: String, val directory: Boolean)
+data class Doc(val uri: Uri, val path: String, val directory: Boolean, val size: Long = -1)
+
+private fun documentKey(context: Context, uri: Uri, size: Long): String = station(context,"documentKey",buildJsonObject {
+    put("authority",uri.authority.orEmpty());put("id",if(uri.pathSegments.contains("document")) Docs.getDocumentId(uri) else Docs.getTreeDocumentId(uri));put("size",size)
+}).jsonPrimitive.content
+
+fun documentKey(context: Context, uri: Uri): String {
+    val size=context.contentResolver.query(uri,arrayOf(OpenableColumns.SIZE,Docs.Document.COLUMN_MIME_TYPE),null,null,null)?.use {
+        if(it.moveToFirst() && !it.isNull(0) && it.getString(1)!=Docs.Document.MIME_TYPE_DIR) it.getLong(0) else -1L
+    } ?: -1L
+    return documentKey(context,uri,size)
+}
 
 fun documents(context: Context, tree: Uri): List<Doc> {
     val result = mutableListOf<Doc>()
@@ -40,7 +51,7 @@ fun documents(context: Context, tree: Uri): List<Doc> {
         check(depth < 32) { "Thư mục quá sâu (tối đa 31 cấp)" }
         check(visited.add(id)) { "Nhà cung cấp trả về vòng lặp thư mục" }
         val children = Docs.buildChildDocumentsUriUsingTree(tree, id)
-        context.contentResolver.query(children,arrayOf(Docs.Document.COLUMN_DOCUMENT_ID,Docs.Document.COLUMN_DISPLAY_NAME,Docs.Document.COLUMN_MIME_TYPE),null,null,null)?.use { c ->
+        context.contentResolver.query(children,arrayOf(Docs.Document.COLUMN_DOCUMENT_ID,Docs.Document.COLUMN_DISPLAY_NAME,Docs.Document.COLUMN_MIME_TYPE,Docs.Document.COLUMN_SIZE),null,null,null)?.use { c ->
             val dirs = mutableListOf<Pair<String,String>>()
             while (c.moveToNext()) {
                 check(result.size < 20000) { "Thư mục có hơn 20.000 mục; hãy chọn thư mục nhỏ hơn" }
@@ -48,7 +59,7 @@ fun documents(context: Context, tree: Uri): List<Doc> {
                 check(name != "." && name != ".." && '/' !in name && '\\' !in name) { "Tên tệp không an toàn" }
                 val path=if(parent.isEmpty()) name else "$parent/$name"
                 val directory=c.getString(2)==Docs.Document.MIME_TYPE_DIR
-                result.add(Doc(Docs.buildDocumentUriUsingTree(tree,child),path,directory))
+                result.add(Doc(Docs.buildDocumentUriUsingTree(tree,child),path,directory,if(c.isNull(3)) -1 else c.getLong(3)))
                 if(directory) dirs.add(child to path)
             }
             dirs.forEach { walk(it.first,it.second,depth+1) }
@@ -102,6 +113,11 @@ fun customArt(context: Context, uri: Uri, game: JsonObject): JsonElement {
 }
 fun scan(context: Context, tree: Uri): Pair<Int,List<String>> {
     val all=documents(context,tree)
+    val legacy=station(context,"load").jsonObject["games"]!!.jsonArray.mapNotNull { entry ->
+        val g=entry.jsonObject
+        if(g.str("document_key").isNotEmpty()) null else runCatching { JsonObject(g+mapOf("document_key" to JsonPrimitive(documentKey(context,Uri.parse(g.str("uri")))))) }.getOrNull()
+    }
+    if(legacy.isNotEmpty()) station(context,"batch",JsonArray(legacy))
     var count=0
     val errors=mutableListOf<String>()
     val discovered=mutableListOf<JsonObject>()
@@ -113,6 +129,10 @@ fun scan(context: Context, tree: Uri): Pair<Int,List<String>> {
         if(folders.any { it.isEmpty() || doc.path.startsWith("$it/") }) continue
         try {
             val detected=detect(context,doc) ?: continue
+            if(detected.str("system")=="PS4") {
+                if(ext=="sfo") folders.add(doc.path.substringBeforeLast('/',"").let {if(it.endsWith("sce_sys",true)) it.substringBeforeLast('/',"") else it})
+                continue
+            }
             if(detected["system"]==null) { if(detected["ambiguous"]!=null) errors.add("${doc.path}: ${detected.str("ambiguous")}"); continue }
             var uri=doc.uri; var art=""
             val isSfo=ext=="sfo"
@@ -126,7 +146,7 @@ fun scan(context: Context, tree: Uri): Pair<Int,List<String>> {
                 val image=all.firstOrNull { !it.directory && (it.path.equals("${parent}PIC1.PNG",true)||it.path.equals("${parent}ICON0.PNG",true)) }
                 if(image!=null) art=cacheImage(context,image.uri)
             }
-            discovered.add(JsonObject(detected + mapOf("uri" to JsonPrimitive(uri.toString()),"art" to JsonPrimitive(art),"folder" to JsonPrimitive(tree.toString()),"path" to JsonPrimitive(if(isSfo) folder else doc.path))))
+            discovered.add(JsonObject(detected + mapOf("document_key" to JsonPrimitive(documentKey(context,uri,if(isSfo) -1 else doc.size)),"uri" to JsonPrimitive(uri.toString()),"art" to JsonPrimitive(art),"folder" to JsonPrimitive(tree.toString()),"path" to JsonPrimitive(if(isSfo) folder else doc.path))))
             count++
         } catch(e: Exception) { errors.add("${doc.path}: ${e.message}") }
     }

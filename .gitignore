@@ -4,4 +4,5 @@
 /android/local.properties
 /android/app/src/main/jniLibs/
 *.log
+/docs/*.log
 .idea/

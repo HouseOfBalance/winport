@@ -53,10 +53,9 @@ pub extern "system" fn Java_io_winport_app_RetroNative_command(
             return Ok(session.as_ref().unwrap().info().to_string());
         }
         if action == "close" {
-            let result = session.as_ref().map_or(Ok(()), |s| s.save_sram());
+            session.as_ref().map_or(Ok(()), |s| s.save_sram())?;
             session.take();
             libretro::clear_input();
-            result?;
             return Ok("{}".into());
         }
         let s = session.as_mut().ok_or("No emulation session")?;
@@ -79,6 +78,12 @@ pub extern "system" fn Java_io_winport_app_RetroNative_command(
                 Ok("{}".into())
             }
             "info" => Ok(s.info().to_string()),
+            "checkpoint" => {
+                let p: serde_json::Value =
+                    serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+                Ok(s.checkpoint(p["auto"].as_bool().unwrap_or(false))?
+                    .to_string())
+            }
             "save" => Ok(serde_json::json!({"savedBytes":s.save_state()?}).to_string()),
             "load" => {
                 s.load_state()?;

@@ -32,6 +32,7 @@ val buildRust by tasks.registering(Exec::class) {
     inputs.dir("../../rust/src")
     inputs.file("../../rust/Cargo.toml")
     inputs.file("../../rust/Cargo.lock")
+    inputs.file("../../rust/core-manifest.json")
     inputs.file("../../rust/build.rs")
     inputs.file("../../scripts/build-rust.sh")
     outputs.dir("src/main/jniLibs")

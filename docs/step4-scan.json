@@ -1,0 +1,42 @@
+{
+  "games": [
+    {
+      "document_key": "[\"com.android.externalstorage.documents\",\"primary:Download/step4-outer/inner/winport-psp.elf\",185624]",
+      "uri": "content://com.android.externalstorage.documents/tree/primary%3ADownload%2Fstep4-outer%2Finner/document/primary%3ADownload%2Fstep4-outer%2Finner%2Fwinport-psp.elf",
+      "title": "winport-psp",
+      "system": "PSP",
+      "serial": "",
+      "art": "",
+      "folder": "content://com.android.externalstorage.documents/tree/primary%3ADownload%2Fstep4-outer%2Finner",
+      "path": "winport-psp.elf",
+      "resources": []
+    },
+    {
+      "document_key": "[\"com.android.externalstorage.documents\",\"primary:Download/step4-outer/inner/winport-ps2.elf\",82568]",
+      "uri": "content://com.android.externalstorage.documents/tree/primary%3ADownload%2Fstep4-outer%2Finner/document/primary%3ADownload%2Fstep4-outer%2Finner%2Fwinport-ps2.elf",
+      "title": "winport-ps2",
+      "system": "PS2",
+      "serial": "",
+      "art": "",
+      "folder": "content://com.android.externalstorage.documents/tree/primary%3ADownload%2Fstep4-outer%2Finner",
+      "path": "winport-ps2.elf",
+      "resources": []
+    },
+    {
+      "document_key": "[\"com.android.externalstorage.documents\",\"primary:Download/step4-outer/inner/winport-demo.exe\",10240]",
+      "uri": "content://com.android.externalstorage.documents/tree/primary%3ADownload%2Fstep4-outer%2Finner/document/primary%3ADownload%2Fstep4-outer%2Finner%2Fwinport-demo.exe",
+      "title": "winport-demo",
+      "system": "PS1",
+      "serial": "",
+      "art": "",
+      "folder": "content://com.android.externalstorage.documents/tree/primary%3ADownload%2Fstep4-outer%2Finner",
+      "path": "winport-demo.exe",
+      "resources": []
+    }
+  ],
+  "folders": [
+    "content://com.android.externalstorage.documents/tree/primary%3ADownload%2Fstep4-outer",
+    "content://com.android.externalstorage.documents/tree/primary%3ADownload%2Fstep4-outer%2Finner"
+  ],
+  "prefs": null
+}

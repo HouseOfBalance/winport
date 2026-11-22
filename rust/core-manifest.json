@@ -1,0 +1,62 @@
+[
+  {
+    "abi": "arm64-v8a",
+    "name": "swanstation",
+    "url": "https://buildbot.libretro.com/nightly/android/latest/arm64-v8a/swanstation_libretro_android.so.zip",
+    "sha256": "71b0f8dc87f75848018b69a4dc5bdf03bc641caa64e190eccce767785f3e2842"
+  },
+  {
+    "abi": "arm64-v8a",
+    "name": "mednafen_psx",
+    "url": "https://buildbot.libretro.com/nightly/android/latest/arm64-v8a/mednafen_psx_libretro_android.so.zip",
+    "sha256": "6dfb1c35115a89dc3b7d95c9299543df9122ad665988904bb50009a511712d0a"
+  },
+  {
+    "abi": "arm64-v8a",
+    "name": "pcsx_rearmed",
+    "url": "https://buildbot.libretro.com/nightly/android/latest/arm64-v8a/pcsx_rearmed_libretro_android.so.zip",
+    "sha256": "72fce32afed9fa165ce255a85036d9509816375c3aa7fc9fd623547f345143c3"
+  },
+  {
+    "abi": "arm64-v8a",
+    "name": "ppsspp",
+    "url": "https://buildbot.libretro.com/nightly/android/latest/arm64-v8a/ppsspp_libretro_android.so.zip",
+    "sha256": "6bb43884150bd3d197c1f57bffd04a09e8a85d5360f024abff52b4da8f499ae3"
+  },
+  {
+    "abi": "arm64-v8a",
+    "name": "play",
+    "url": "https://buildbot.libretro.com/nightly/android/latest/arm64-v8a/play_libretro_android.so.zip",
+    "sha256": "2908546448c01305941665a5fd2d500339055b1c1620149d9d7e859995253abc"
+  },
+  {
+    "abi": "x86_64",
+    "name": "swanstation",
+    "url": "https://buildbot.libretro.com/nightly/android/latest/x86_64/swanstation_libretro_android.so.zip",
+    "sha256": "1d119606ed9b9123eb2ad1ac34683c0a0fd2638b785b7cd6a214836b1236b67a"
+  },
+  {
+    "abi": "x86_64",
+    "name": "mednafen_psx",
+    "url": "https://buildbot.libretro.com/nightly/android/latest/x86_64/mednafen_psx_libretro_android.so.zip",
+    "sha256": "99902754b55c19629e40fd1d524be14ad068b71c1f2a9de26368cbf1a068b7ad"
+  },
+  {
+    "abi": "x86_64",
+    "name": "pcsx_rearmed",
+    "url": "https://buildbot.libretro.com/nightly/android/latest/x86_64/pcsx_rearmed_libretro_android.so.zip",
+    "sha256": "2f4ee471b6f692aac66ecf4aa92f2359eb11d6add7efa362a3ee3cd50f5731ee"
+  },
+  {
+    "abi": "x86_64",
+    "name": "ppsspp",
+    "url": "https://buildbot.libretro.com/nightly/android/latest/x86_64/ppsspp_libretro_android.so.zip",
+    "sha256": "8a292bfc546f7a0a10ce9e17a5aeefbbf86b2f07334d81aa81502c678ef41c37"
+  },
+  {
+    "abi": "x86_64",
+    "name": "play",
+    "url": "https://buildbot.libretro.com/nightly/android/latest/x86_64/play_libretro_android.so.zip",
+    "sha256": "8394325c48468217f21910aa39b5e1637aecb99480f7fbb2504ba11cafb0b378"
+  }
+]

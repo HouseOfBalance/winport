@@ -1,0 +1,15 @@
+
+/home/ubuntu/winport-verification/step4-installed-play.so:	file format elf64-x86-64
+
+Disassembly of section .text:
+
+0000000000216b00 <retro_get_memory_size>:
+  216b00: 31 c0                        	xorl	%eax, %eax
+  216b02: 83 ff 02                     	cmpl	$0x2, %edi
+  216b05: 0f 94 c0                     	sete	%al
+  216b08: c1 e0 1a                     	shll	$0x1a, %eax
+  216b0b: c3                           	retq
+  216b0c: cc                           	int3
+  216b0d: cc                           	int3
+  216b0e: cc                           	int3
+  216b0f: cc                           	int3

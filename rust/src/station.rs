@@ -12,6 +12,8 @@ pub enum System {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Game {
+    #[serde(default)]
+    pub document_key: String,
     pub uri: String,
     pub title: String,
     pub system: System,
@@ -394,6 +396,40 @@ fn distance(a: &str, b: &str) -> usize {
 }
 
 pub fn command(root: &Path, action: &str, payload: Value) -> Result<Value, String> {
+    if action == "documentKey" {
+        let authority = payload["authority"]
+            .as_str()
+            .filter(|v| !v.is_empty())
+            .ok_or("Thiếu nhà cung cấp tài liệu")?;
+        let id = payload["id"]
+            .as_str()
+            .filter(|v| !v.is_empty())
+            .ok_or("Thiếu mã tài liệu")?;
+        let size = payload["size"]
+            .as_i64()
+            .filter(|v| *v >= -1)
+            .ok_or("Kích thước tài liệu không hợp lệ")?;
+        return Ok(Value::String(json!([authority, id, size]).to_string()));
+    }
+    if action == "coreManifest" {
+        return Ok(crate::core_integrity::manifest());
+    }
+    if action == "verifyCore" {
+        let abi = payload["abi"].as_str().ok_or("Thiếu ABI")?;
+        let name = payload["name"].as_str().ok_or("Thiếu tên lõi")?;
+        let manifest = crate::core_integrity::manifest();
+        let pin = manifest
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["abi"] == abi && v["name"] == name)
+            .ok_or("Lõi chưa được ghim cho thiết bị này")?;
+        crate::core_integrity::verify(
+            Path::new(payload["path"].as_str().ok_or("Thiếu đường dẫn lõi")?),
+            pin["sha256"].as_str().unwrap(),
+        )?;
+        return Ok(json!({"verified":true}));
+    }
     if action == "dependencies" {
         let content = payload["text"].as_str().ok_or("Thiếu nội dung danh sách")?;
         let cue = payload["name"]
@@ -473,6 +509,7 @@ pub fn command(root: &Path, action: &str, payload: Value) -> Result<Value, Strin
     } else {
         Library::default()
     };
+    lib.games.retain(|g| g.system != System::PS4);
     match action {
         "load" => return serde_json::to_value(lib).map_err(|e| e.to_string()),
         "folder" => {
@@ -497,7 +534,13 @@ pub fn command(root: &Path, action: &str, payload: Value) -> Result<Value, Strin
                 {
                     return Err("Tên hoặc URI trò chơi không hợp lệ".into());
                 }
-                if let Some(old) = lib.games.iter_mut().find(|v| v.uri == game.uri) {
+                if game.system == System::PS4 {
+                    continue;
+                }
+                if let Some(old) = lib.games.iter_mut().find(|v| {
+                    v.uri == game.uri
+                        || (!game.document_key.is_empty() && v.document_key == game.document_key)
+                }) {
                     let art = old.art.clone();
                     *old = game;
                     if old.art.is_empty() {
@@ -507,6 +550,16 @@ pub fn command(root: &Path, action: &str, payload: Value) -> Result<Value, Strin
                     lib.games.push(game);
                 }
             }
+            let mut keys = std::collections::BTreeSet::new();
+            let mut uris = std::collections::BTreeSet::new();
+            lib.games.retain(|g| {
+                let key = if g.document_key.is_empty() {
+                    format!("uri:{}", g.uri)
+                } else {
+                    g.document_key.clone()
+                };
+                uris.insert(g.uri.clone()) && keys.insert(key)
+            });
         }
         "remove" => lib
             .games
@@ -712,7 +765,7 @@ mod tests {
             command(dir.path(), "load", json!({})).unwrap()["games"],
             json!([])
         );
-        let game = json!({"title":"Original","uri":"content://test/1","system":"PS4"});
+        let game = json!({"title":"Original","uri":"content://test/1","system":"PS3"});
         command(dir.path(), "upsert", game.clone()).unwrap();
         command(dir.path(), "upsert", game).unwrap();
         assert_eq!(
@@ -757,6 +810,76 @@ mod tests {
             )
             .unwrap()["valid"],
             false
+        );
+    }
+    #[test]
+    fn overlapping_document_identity_and_hidden_system() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = command(
+            dir.path(),
+            "documentKey",
+            json!({"authority":"provider","id":"primary:Games/a.elf","size":42}),
+        )
+        .unwrap();
+        let game = |uri: &str, size_key: &Value| json!({"uri":uri,"title":"Demo","system":"PSP","document_key":size_key});
+        command(
+            dir.path(),
+            "upsert",
+            game("content://provider/tree/a/document/game", &key),
+        )
+        .unwrap();
+        command(
+            dir.path(),
+            "upsert",
+            game("content://provider/tree/b/document/game", &key),
+        )
+        .unwrap();
+        assert_eq!(
+            command(dir.path(), "load", json!({})).unwrap()["games"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let changed = command(
+            dir.path(),
+            "documentKey",
+            json!({"authority":"provider","id":"primary:Games/a.elf","size":43}),
+        )
+        .unwrap();
+        assert_ne!(key, changed);
+        command(
+            dir.path(),
+            "upsert",
+            game("content://provider/tree/c/document/game", &changed),
+        )
+        .unwrap();
+        assert_eq!(
+            command(dir.path(), "load", json!({})).unwrap()["games"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(command(
+            dir.path(),
+            "documentKey",
+            json!({"authority":"","id":"","size":-2})
+        )
+        .is_err());
+        command(dir.path(), "batch", json!([])).unwrap();
+        command(
+            dir.path(),
+            "upsert",
+            json!({"uri":"content://hidden","title":"Hidden","system":"PS4"}),
+        )
+        .unwrap();
+        assert_eq!(
+            command(dir.path(), "load", json!({})).unwrap()["games"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
         );
     }
 }

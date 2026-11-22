@@ -1,0 +1,2 @@
+/data/data/io.winport.app/files/saves/2f4ee471b6f692aac66ecf4a/f40fff5e2c58b8e31eb39105a7387efee0b929a0f191623a11e46d888207b85d/sram.bin 131072
+/data/data/io.winport.app/files/saves/2f4ee471b6f692aac66ecf4a/f40fff5e2c58b8e31eb39105a7387efee0b929a0f191623a11e46d888207b85d/slot-0.state 4456448

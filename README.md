@@ -2,22 +2,24 @@
 
 An independent Android console-style launcher with a **Rust libretro frontend**, GLES hardware/software video and stereo audio. Original CC0 homebrew runs through PS1 / PCSX ReARMed HLE, PSP / PPSSPP GLES and PS2 / Play! GLES. These are rendering checks, not broad game-compatibility or performance claims. No games, BIOS, PPSSPP assets or emulator cores are bundled.
 
-<img src="docs/step3-library.png" alt="Vietnamese console library populated by a SAF scan of original PS1, PSP and PS2 homebrew and generated PS4 metadata" width="960" />
+<img src="docs/step4-library.png" alt="Vietnamese console library with original PS1, PSP and PS2 homebrew, deduplicated across SAF roots" width="960" />
 
-## Current app — Step 3
+## Current app — Step 4
 
 The active interface is Vietnamese, landscape and fullscreen. It starts with an empty library, not demo entries. The files used in the verification screenshots were generated outside the repository and added through Android's document picker.
 
-- **Quét thư mục** grants persistent SAF read access and recursively discovers PS1, PSP, PS2, PS3 and PS4 content. **Cài đặt → Thư viện và thư mục** offers rescan/forget. **Thêm tệp** keeps a manual system/title selector for ambiguous formats. Rescanning merges discoveries and preserves existing art; it does not silently delete missing/offline entries.
+- **Quét thư mục** grants persistent SAF read access and recursively discovers PS1, PSP, PS2 and PS3 content. Overlapping roots are merged by provider/document identity and size, not the tree URI prefix. **Cài đặt → Thư viện và thư mục** offers rescan/forget. **Thêm tệp** keeps a manual system/title selector for ambiguous formats. Rescanning preserves existing art and does not silently delete missing/offline entries. PS4 is intentionally absent from the UI/library; internal recognition excludes its folders/packages and old entries are hidden/removed.
 - Detection and persistence live in Rust (`station.rs`, `disc.rs`). SFO, PS-X EXE, PBP, ELF flags, PKG signatures and ISO directory/SYSTEM.CNF data are parsed with bounded reads; PSP/PS3 ISO SFO titles and serials are read when available. CSO v1 and CHD v5 are decoded only as far as needed for ISO metadata. Older/unsupported images and inconclusive headers are reported rather than confidently assigned the wrong system; add them manually and choose the system. Provider streams without seek support use bounded header/chunk reads for uncompressed content. Core support for any container format is a separate constraint.
 - **Tùy chọn** offers user-triggered libretro-thumbnails fuzzy cover lookup, a custom-image picker, title/system editing and removal. Folder scans use available ICON0.PNG/PIC1.PNG art. Images are cached privately and used in tiles and the game hub; no copyrighted example artwork is bundled. Cover lookup requires network access and an available GitHub API quota.
 - **Cài đặt → BIOS và firmware** explains each system in Vietnamese, imports user-supplied files and calculates MD5. Known PS1 hashes are checked; mismatches are rejected. Unknown firmware is explicitly unverified, not called valid. PPSSPP and Play! use HLE. PS3 links to Sony's official firmware support page but never downloads firmware. External emulators may need their own firmware import.
 - **Cài đặt → Tay cầm và điều khiển** remaps physical keys, analog deadzone, virtual-pad size/opacity and hiding when a controller is connected. PSP/PS2 have two virtual analog sticks. Changes apply to the next session. Pair Bluetooth devices using Android settings.
 - In-game **Tạm dừng** has slots 1–4 with thumbnails/timestamps and save/load/delete actions. Optional auto-save uses slot 0. Core state support is not guaranteed: failed/missing states show errors. Use the in-game memory card too, especially for Play!.
-- **PS3/PS4** use a selected installed external application, not an in-app core. The app sends ACTION_VIEW with the content URI/read grant and falls back to the package launcher with a toast if unsupported. Folder support and additional SAF grants depend on that external app. The PS4 hub explicitly warns that no working Android PS4 emulator is configured; retaining a game in the library is not an emulation claim.
-- Sessions run in **`:emu`**, separate from the launcher. Exit requests normal SRAM/native shutdown off the UI thread, then finishes/kills only that process after a two-second deadline if the core stalls. PS1/PSP finish normally in the check; Play! needs the deadline. This fixes returning home, not Play!'s native deinitialization. Forced teardown can lose pending SRAM or auto-save; no state-save success is implied by returning home. This is fault isolation, not a native-code security sandbox.
+- **PS3** uses a selected installed external application, not an in-app core. The app sends ACTION_VIEW with the content URI/read grant and falls back to the package launcher with a toast if unsupported. Folder support and additional SAF grants depend on that external app.
+- Sessions run in **`:emu`**, separate from the launcher. Checkpoints write exposed SRAM plus optional auto-state using file fsync, atomic rename and directory fsync. Pause/Stop request the same serialized checkpoint. An automatic teardown deadline is armed **only after a successful checkpoint**, not when Exit is first tapped. Core execution stops before context_destroy (with EGL current), unload, deinit and EGL destruction. Audio callbacks use try-lock/drop rather than waiting for the buffer lock.
+- A package-private heartbeat reports native-thread progress. A core call that stops progressing for over five seconds shows a Vietnamese warning and an explicit force-exit option; unsaved data may be lost. **Lossless forced termination/system SIGKILL is not guaranteed.** The pinned Play! binary can block inside retro_run before it services checkpoints and exposes no libretro SRAM. This is a core limitation, not fixed by rearranging teardown. See [Step 4 evidence and concrete limits](docs/step4-verification.md). Process separation is fault isolation, not a native-code security sandbox.
+- Cores are pinned by **URL + SHA-256** in `rust/core-manifest.json`; both downloads and launch verify the extracted ELF and fail closed. The inspected stable Android directories exposed APKs, not versioned individual cores; tested dated/versioned core URLs returned 404. These pins therefore use mutable nightly URLs with fixed observed hashes. Refresh deliberately with `bash scripts/update-core-hashes.sh`, review the manifest diff and rebuild; an upstream nightly change otherwise results in a clear hash error. No automatic hash refresh or unverified fallback is used.
 
-Generate the exact verification folder (original CC0 executables plus synthetic PS4 PARAM.SFO; no BIOS or commercial game):
+Generate the verification folder (original CC0 executables plus synthetic unsupported-system metadata used to test exclusion; no BIOS or commercial game):
 
 ```sh
 mkdir -p "$HOME/winport-verification/step3-scan"
@@ -26,7 +28,9 @@ adb push "$HOME/winport-verification/step3-scan" /sdcard/Download/
 # In the app: Quét thư mục → Download/step3-scan → USE THIS FOLDER → ALLOW.
 ```
 
-Step 3 evidence: [library](docs/step3-library.png), [save slots](docs/step3-save-slots.png), [BIOS guide](docs/step3-bios.png), [controls](docs/step3-controls.png), [PS2 return home](docs/step3-ps2-exit.png), [PS4 notice](docs/step3-ps4-notice.png). See [Step 3 verification](docs/step3-verification.md) for checks and limitations.
+Current evidence: [Step 4 checks](docs/step4-verification.md). [Step 3 verification](docs/step3-verification.md) is historical and shows the former system visibility/exit behavior.
+
+GitHub Actions (`.github/workflows/ci.yml`) runs locked Rust tests and builds both Android ABIs with JDK 17/NDK 27, then uploads the debug APK. No LICENSE file is supplied; no project-wide license is granted by this repository. Existing third-party and generated homebrew notices retain their own scope.
 
 ## Architecture
 
@@ -108,7 +112,7 @@ For the current app use **Cài đặt → Lõi giả lập** to download a core,
 4. Use a gamepad's D-pad, A/B/X/Y, shoulders, triggers, Start/Select and analog sticks, or the translucent generic on-screen pad. **Back / Menu / controller Mode** opens Pause; Start remains the emulated game Start button. The pause menu offers Resume, Save state, Load state, Verify state round trip and Exit. Loading before a save reports an error, rather than fabricating a state.
 5. Use **Exit** for clean SRAM persistence. From the home screen, Start/Menu or the avatar opens the Control Center; Power → Exit app closes the launcher.
 
-Only load trusted cores: they execute native code with the app's privileges. HTTPS and ELF checks are not signature verification; these nightlies are not pinned. Cores retain their own licenses and requirements. No Sony BIOS is supplied or fetched. SwanStation and Beetle need an appropriate legally supplied BIOS in `files/system`; there is no BIOS picker yet. PCSX ReARMed HLE works for the test below but is not a substitute for full BIOS compatibility.
+Only load trusted cores: they execute native code with the app's privileges. Step 4 now pins the nightly ELF hashes; this is integrity checking, not an upstream digital signature or sandbox. Cores retain their own licenses and requirements. No Sony BIOS is supplied or fetched. SwanStation and Beetle need an appropriate legally supplied BIOS in `files/system`; the current BIOS settings page provides an import picker. PCSX ReARMed HLE works for the test below but is not a substitute for full BIOS compatibility.
 
 ## PSP and PS2
 

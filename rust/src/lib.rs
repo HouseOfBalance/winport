@@ -1,5 +1,6 @@
 pub mod components;
 pub mod containers;
+mod core_integrity;
 mod disc;
 pub mod jni;
 pub mod launch;

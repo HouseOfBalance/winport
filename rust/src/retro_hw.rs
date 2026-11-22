@@ -53,6 +53,7 @@ mod android {
             height: u32,
         ) -> *mut c_void;
         fn wp_gl_destroy(state: *mut c_void);
+        fn wp_gl_make_current(state: *mut c_void) -> bool;
         fn wp_gl_size(state: *mut c_void, width: u32, height: u32) -> bool;
         fn wp_gl_present(
             state: *mut c_void,
@@ -165,6 +166,10 @@ mod android {
         }
         pub fn notify_destroy(&mut self) {
             if self.notified {
+                if !unsafe { wp_gl_make_current(self.state) } {
+                    return;
+                }
+                crate::libretro::teardown_trace(c"Teardown: context_destroy while EGL current\n");
                 if let Some(destroy) = self.callback.context_destroy {
                     unsafe {
                         destroy();
