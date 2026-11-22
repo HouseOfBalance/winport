@@ -55,7 +55,7 @@ class MainActivity : ComponentActivity() {
         immersive()
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(primary = Color.White, onPrimary = Night, background = Night, surface = Glass, onSurface = Color.White, secondary = Ice), typography = Typography()) {
-                Surface(Modifier.fillMaxSize(), color = Night, contentColor = Color.White) { RetroShell(exit = { finishAndRemoveTask() }) }
+                Surface(Modifier.fillMaxSize(), color = Night, contentColor = Color.White) { StationShell(exit = { finishAndRemoveTask() }) }
             }
         }
     }
@@ -68,6 +68,7 @@ class MainActivity : ComponentActivity() {
     }
     override fun onWindowFocusChanged(hasFocus: Boolean) { super.onWindowFocusChanged(hasFocus); if (hasFocus) immersive() }
     override fun dispatchKeyEvent(event: AndroidKey): Boolean {
+        if (ControlCapture.sink?.invoke(event) == true) return true
         if (RetroInput.active && (event.keyCode == AndroidKey.KEYCODE_MENU || event.keyCode == AndroidKey.KEYCODE_BUTTON_MODE)) return super.dispatchKeyEvent(AndroidKey(event.downTime, event.eventTime, event.action, AndroidKey.KEYCODE_BACK, event.repeatCount))
         if (RetroInput.key(event)) return true
         if (event.keyCode == AndroidKey.KEYCODE_BUTTON_A) return super.dispatchKeyEvent(AndroidKey(event.downTime, event.eventTime, event.action, AndroidKey.KEYCODE_DPAD_CENTER, event.repeatCount))

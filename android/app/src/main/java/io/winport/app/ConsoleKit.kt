@@ -174,7 +174,7 @@ fun AmbientBackground() {
 @Composable
 fun PageTitle(title: String, subtitle: String = "", back: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(bottom = 20.dp), verticalAlignment = Alignment.CenterVertically) {
-        ConsoleIcon(Mark.Back, "Back", back)
+        ConsoleIcon(Mark.Back, "Quay lại", back)
         Spacer(Modifier.width(15.dp))
         Column { Text(title, fontSize = 30.sp, fontWeight = FontWeight.Light); if (subtitle.isNotBlank()) Text(subtitle, color = Soft, fontSize = 11.sp) }
     }

@@ -70,6 +70,12 @@ object RetroInput {
         KeyEvent.KEYCODE_BUTTON_L1 to 10, KeyEvent.KEYCODE_BUTTON_R1 to 11,
         KeyEvent.KEYCODE_BUTTON_L2 to 12, KeyEvent.KEYCODE_BUTTON_R2 to 13,
         KeyEvent.KEYCODE_BUTTON_THUMBL to 14, KeyEvent.KEYCODE_BUTTON_THUMBR to 15)
+    private var mapping: Map<Int, Int> = keys
+    private var deadzone = .15f
+    fun configure(prefs: android.content.SharedPreferences) {
+        deadzone = prefs.getFloat("deadzone", .15f)
+        mapping = keys + prefs.all.filterKeys { it.startsWith("key_") }.mapNotNull { (key,value) -> key.removePrefix("key_").toIntOrNull()?.let { it to (value as? Int ?: return@mapNotNull null) } }.toMap()
+    }
     @Synchronized fun button(source: Int, id: Int, down: Boolean) {
         buttons[source][id] = down
         RetroNative.input(0, id, if (buttons.any { it[id] }) 1 else 0)
@@ -80,14 +86,14 @@ object RetroInput {
     }
     fun key(event: KeyEvent): Boolean {
         if (!active || paused) return false
-        val id = keys[event.keyCode] ?: return false
+        val id = mapping[event.keyCode] ?: return false
         if (event.action == KeyEvent.ACTION_DOWN || event.action == KeyEvent.ACTION_UP) button(0, id, event.action == KeyEvent.ACTION_DOWN)
         return true
     }
     fun motion(event: MotionEvent): Boolean {
         if (!active || paused || event.source and android.view.InputDevice.SOURCE_JOYSTICK == 0) return false
         listOf(MotionEvent.AXIS_X, MotionEvent.AXIS_Y, MotionEvent.AXIS_Z, MotionEvent.AXIS_RZ).forEachIndexed { index, axis ->
-            val value = event.getAxisValue(axis).let { if (kotlin.math.abs(it) < .15f) 0f else it }.coerceIn(-1f, 1f)
+            val value = event.getAxisValue(axis).let { if (kotlin.math.abs(it) < deadzone) 0f else kotlin.math.sign(it) * ((kotlin.math.abs(it) - deadzone) / (1f - deadzone)) }.coerceIn(-1f, 1f)
             RetroNative.input(0, 16 + index, (value * 32767).toInt().toShort())
         }
         val x = event.getAxisValue(MotionEvent.AXIS_HAT_X); val y = event.getAxisValue(MotionEvent.AXIS_HAT_Y)
@@ -107,7 +113,7 @@ private fun coreLabel(name: String) = when (name) {
 }
 private fun abi(): String = Build.SUPPORTED_ABIS.firstOrNull { it == "arm64-v8a" || it == "x86_64" }
     ?: error("This step supports arm64-v8a and x86_64 only")
-private fun coreFile(context: Context, name: String) = File(context.filesDir, "cores/${abi()}/${name}_libretro_android.so")
+internal fun coreFile(context: Context, name: String) = File(context.filesDir, "cores/${abi()}/${name}_libretro_android.so")
 
 private fun downloadPspAssets(context: Context) {
     val system = File(context.filesDir, "system").apply { mkdirs() }
@@ -154,7 +160,7 @@ private fun downloadPspAssets(context: Context) {
     } finally { connection.disconnect(); stage.deleteRecursively() }
 }
 
-private fun downloadCore(context: Context, name: String): File {
+internal fun downloadCore(context: Context, name: String): File {
     require(name in coreNames)
     val target = coreFile(context, name)
     target.parentFile!!.mkdirs()
@@ -193,7 +199,7 @@ private fun downloadCore(context: Context, name: String): File {
     } finally { staging.delete(); archive.delete() }
 }
 
-private fun importRom(context: Context, uri: Uri): File {
+internal fun importRom(context: Context, uri: Uri): File {
     val name = context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c -> if (c.moveToFirst()) c.getString(0) else null } ?: error("No ROM filename")
     require(name.substringAfterLast('.').lowercase() in listOf("exe", "ps-exe", "bin", "iso", "img", "chd", "pbp", "elf", "prx", "cso", "isz")) { "Choose single-file PS1, PSP or PS2 content (.exe, .elf, .pbp, .iso, .chd, .cso). Multi-file CUE import comes later." }
     val temp = File.createTempFile("rom-", ".part", context.cacheDir)
@@ -201,7 +207,7 @@ private fun importRom(context: Context, uri: Uri): File {
         val digest = MessageDigest.getInstance("SHA-256")
         context.contentResolver.openInputStream(uri)?.use { input -> temp.outputStream().use { out ->
             val buffer = ByteArray(65536); var total = 0L
-            while (true) { val count = input.read(buffer); if (count < 0) break; total += count; require(total <= 2_000_000_000L) { "ROM exceeds 2 GB" }; digest.update(buffer, 0, count); out.write(buffer, 0, count) }
+            while (true) { val count = input.read(buffer); if (count < 0) break; total += count; require(total <= 16_000_000_000L) { "Trò chơi vượt quá 16 GB" }; digest.update(buffer, 0, count); out.write(buffer, 0, count) }
         } } ?: error("Cannot read ROM")
         val hash = digest.digest().joinToString("") { "%02x".format(it) }
         val dir = File(context.filesDir, "roms/$hash").apply { mkdirs() }
@@ -210,6 +216,10 @@ private fun importRom(context: Context, uri: Uri): File {
         return target
     } finally { temp.delete() }
 }
+
+private fun gameSaveKey(rom: File): String = if(rom.extension.lowercase() in listOf("cue","m3u")) {
+    MessageDigest.getInstance("SHA-256").digest(rom.absolutePath.toByteArray()).joinToString("") { "%02x".format(it) }
+} else rom.parentFile!!.name
 
 class RetroSession(private val context: Context, private val core: File, private val rom: File,
     private val status: (String) -> Unit, private val ended: (String?) -> Unit) {
@@ -228,30 +238,36 @@ class RetroSession(private val context: Context, private val core: File, private
                 while (alive && !readySurface) Thread.sleep(10)
                 if (!alive) return@Thread
                 val coreHash = MessageDigest.getInstance("SHA-256").digest(core.readBytes()).take(12).joinToString("") { "%02x".format(it) }
-                val saves = File(context.filesDir, "saves/$coreHash/${rom.parentFile!!.name}")
+                val saves = File(context.filesDir, "saves/$coreHash/${gameSaveKey(rom)}")
                 val info = Json.parseToJsonElement(RetroNative.command("start", buildJsonObject {
                     put("core", core.path); put("rom", rom.path); put("system", File(context.filesDir, "system").path); put("saves", saves.path)
                 }.toString())).jsonObject
                 sampleRate = info.getValue("sampleRate").jsonPrimitive.int
                 RetroInput.active = true; RetroInput.paused = false
-                main.post { status("${info.getValue("name").jsonPrimitive.content} · ${info.getValue("fps")} Hz · $sampleRate Hz audio") }
+                main.post { status("${info.getValue("name").jsonPrimitive.content} · ${info.getValue("fps")} Hz · $sampleRate Hz âm thanh") }
                 while (alive) {
                     while (true) {
                         val command = commands.poll() ?: break
                         try {
                             when (command) {
                                 "pause", "resume" -> { paused = command == "pause"; RetroInput.paused = paused; RetroInput.clear(); RetroNative.command("pause", paused.toString()) }
-                                else -> { val result = RetroNative.command(command); android.util.Log.i("WinportState", "$command $result"); main.post { status("$command: $result") } }
+                                else -> {
+                                    val action = command.substringBefore(':')
+                                    val slot = command.substringAfter(':', "1").toIntOrNull() ?: 1
+                                    val result = RetroNative.command(action, "{\"slot\":$slot}")
+                                    android.util.Log.i("WinportState", "$command $result")
+                                    main.post { status("${when(action) { "save" -> "Đã lưu ô"; "load" -> "Đã tải ô"; "delete" -> "Đã xóa ô"; else -> action }} $slot · $result") }
+                                }
                             }
-                        } catch (e: Exception) { main.post { status(e.message ?: "Operation failed") } }
+                        } catch (e: Exception) { main.post { status(e.message ?: "Không thực hiện được thao tác") } }
                     }
                     RetroNative.command("surfaceSync")
                     if (readySurface && !paused) RetroNative.command("run") else Thread.sleep(10)
                 }
-            } catch (e: Exception) { failure = e.message ?: "Emulation failed" }
+            } catch (e: Exception) { failure = e.message ?: "Không chạy được phiên giả lập" }
             finally {
                 alive = false; RetroInput.active = false; RetroInput.clear()
-                try { RetroNative.command("close") } catch (e: Exception) { failure = "SRAM save failed: ${e.message}" }
+                try { RetroNative.command("close") } catch (e: Exception) { failure = "Không lưu được SRAM: ${e.message}" }
                 main.post { ended(failure) }
             }
         }, "libretro-run").start()
@@ -261,11 +277,11 @@ class RetroSession(private val context: Context, private val core: File, private
                 while (alive && sampleRate == 0) Thread.sleep(10)
                 if (!alive) return@Thread
                 val minimum = AudioTrack.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT)
-                check(minimum > 0) { "Unsupported audio sample rate: $sampleRate" }
+                check(minimum > 0) { "Tần số âm thanh không được hỗ trợ: $sampleRate" }
                 track = AudioTrack.Builder().setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
                     .setAudioFormat(AudioFormat.Builder().setSampleRate(sampleRate).setChannelMask(AudioFormat.CHANNEL_OUT_STEREO).setEncoding(AudioFormat.ENCODING_PCM_16BIT).build())
                     .setBufferSizeInBytes(maxOf(minimum * 2, 16384)).setTransferMode(AudioTrack.MODE_STREAM).build()
-                check(track.state == AudioTrack.STATE_INITIALIZED) { "AudioTrack initialization failed" }
+                check(track.state == AudioTrack.STATE_INITIALIZED) { "Không khởi tạo được AudioTrack" }
                 track.play()
                 var stopped = false
                 while (alive) {
@@ -279,11 +295,11 @@ class RetroSession(private val context: Context, private val core: File, private
                         var offset = 0
                         while (alive && offset < samples.size) {
                             val written = track.write(samples, offset, samples.size - offset, AudioTrack.WRITE_BLOCKING)
-                            check(written >= 0) { "AudioTrack write failed: $written" }; if (written == 0) break; offset += written
+                            check(written >= 0) { "Không ghi được âm thanh: $written" }; if (written == 0) break; offset += written
                         }
                     }
                 }
-            } catch (e: Exception) { main.post { status("Audio error: ${e.message}") } }
+            } catch (e: Exception) { main.post { status("Lỗi âm thanh: ${e.message}") } }
             finally { track?.release() }
         }, "libretro-audio").start()
     }
@@ -378,13 +394,40 @@ fun RetroShell(exit: () -> Unit) {
 }
 
 @Composable
-fun EmulationScreen(core: File, rom: File, exit: (String?) -> Unit) {
+fun EmulationScreen(core: File, rom: File, requestExit: () -> Unit = {}, exit: (String?) -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var paused by remember { mutableStateOf(false) }
-    var status by remember { mutableStateOf("Loading core…") }
+    var status by remember { mutableStateOf("Đang khởi động…") }
+    val prefs = remember { context.getSharedPreferences("controls", Context.MODE_PRIVATE) }
+    val statePrefs = remember { context.getSharedPreferences("state-options", Context.MODE_PRIVATE) }
+    var surfaceView by remember { mutableStateOf<SurfaceView?>(null) }
+    var saveDir by remember { mutableStateOf<File?>(null) }
+    var connected by remember { mutableStateOf(false) }
+    var leaving by remember { mutableStateOf(false) }
+    var thumbRevision by remember { mutableIntStateOf(0) }
+    LaunchedEffect(core, rom) {
+        saveDir = withContext(Dispatchers.IO) {
+            val hash = MessageDigest.getInstance("SHA-256").digest(core.readBytes()).take(12).joinToString("") { "%02x".format(it) }
+            File(context.filesDir, "saves/$hash/${gameSaveKey(rom)}")
+        }
+    }
+    LaunchedEffect(Unit) { while (true) { connected = android.view.InputDevice.getDeviceIds().any { android.view.InputDevice.getDevice(it)?.supportsSource(android.view.InputDevice.SOURCE_GAMEPAD) == true }; delay(1000) } }
     val session = remember { RetroSession(context, core, rom, { status = it }, exit) }
     val owner = LocalLifecycleOwner.current
-    fun pause() { paused = true; session.action("pause") }
+    fun pause() { paused = true; RetroInput.paused = true; RetroInput.clear(); session.action("pause") }
+    fun save(slot: Int) {
+        val view = surfaceView
+        val dir = saveDir
+        if (view != null && dir != null && view.width > 0 && view.height > 0) {
+            val bitmap = android.graphics.Bitmap.createBitmap(view.width, view.height, android.graphics.Bitmap.Config.ARGB_8888)
+            try { android.view.PixelCopy.request(view, bitmap, { result ->
+                if (result == android.view.PixelCopy.SUCCESS) Thread {
+                    try { dir.mkdirs(); File(dir,"slot-$slot.png").outputStream().use { bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 90, it) }; Handler(Looper.getMainLooper()).post { thumbRevision++ } } finally { bitmap.recycle() }
+                }.start() else bitmap.recycle()
+            }, Handler(Looper.getMainLooper())) } catch (_: Exception) { bitmap.recycle() }
+        }
+        session.action("save:$slot")
+    }
     BackHandler { pause() }
     DisposableEffect(session) {
         session.start()
@@ -394,35 +437,61 @@ fun EmulationScreen(core: File, rom: File, exit: (String?) -> Unit) {
     }
     Box(Modifier.fillMaxSize().background(Color.Black).pointerInput(Unit) {}) {
         AndroidView(factory = { ctx -> SurfaceView(ctx).apply {
+            surfaceView = this
             holder.addCallback(object : SurfaceHolder.Callback {
                 override fun surfaceCreated(holder: SurfaceHolder) {}
                 override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) { RetroNative.surface(holder.surface); session.readySurface = true }
                 override fun surfaceDestroyed(holder: SurfaceHolder) { session.readySurface = false; RetroInput.clear(); RetroNative.surface(null) }
             })
         } }, modifier = if (core.name.startsWith("ppsspp_") || core.name.startsWith("play_")) Modifier.fillMaxSize() else Modifier.fillMaxHeight().aspectRatio(4f / 3f).align(Alignment.Center))
-        Row(Modifier.align(Alignment.TopEnd).padding(12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) { ConsoleButton("Pause", { pause() }, mark = Mark.More) }
-        if (!paused) {
+        Row(Modifier.align(Alignment.TopEnd).padding(12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) { ConsoleButton("Tạm dừng", { pause() }, mark = Mark.More) }
+        if (!paused && !(connected && prefs.getBoolean("hide", true))) {
             Column(Modifier.align(Alignment.BottomStart).padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                PadButton("UP", 4); Row { PadButton("LEFT", 6); Spacer(Modifier.width(48.dp)); PadButton("RIGHT", 7) }; PadButton("DOWN", 5)
+                PadButton("↑", 4); Row { PadButton("←", 6); Spacer(Modifier.width(48.dp)); PadButton("→", 7) }; PadButton("↓", 5)
                 Row { PadButton("L", 10); PadButton("L2", 12) }
             }
             Column(Modifier.align(Alignment.BottomEnd).padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                PadButton("Y", 1); Row { PadButton("X", 9); Spacer(Modifier.width(48.dp)); PadButton("B", 0) }; PadButton("A", 8)
+                PadButton("△", 1); Row { PadButton("□", 9); Spacer(Modifier.width(48.dp)); PadButton("○", 0) }; PadButton("×", 8)
                 Row { PadButton("R", 11); PadButton("R2", 13) }
             }
-            Row(Modifier.align(Alignment.BottomCenter).padding(15.dp), horizontalArrangement = Arrangement.spacedBy(15.dp)) { PadButton("SELECT", 2); PadButton("START", 3) }
+            Row(Modifier.align(Alignment.BottomCenter).padding(15.dp), horizontalArrangement = Arrangement.spacedBy(15.dp)) { PadButton("Chọn", 2); PadButton("Bắt đầu", 3) }
+            if (core.name.startsWith("ppsspp") || core.name.startsWith("play")) {
+                AnalogPad(16, Modifier.align(Alignment.BottomStart).padding(start = 220.dp, bottom = 25.dp))
+                AnalogPad(18, Modifier.align(Alignment.BottomEnd).padding(end = 220.dp, bottom = 25.dp))
+            }
         }
         if (paused) ModalShade({ paused = false; session.action("resume") }) {
-            Column(Modifier.align(Alignment.Center).widthIn(max = 620.dp).fillMaxWidth(.75f).background(Glass).padding(25.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Paused", fontSize = 30.sp, fontWeight = FontWeight.Light)
+            Column(Modifier.align(Alignment.Center).widthIn(max = 1000.dp).fillMaxWidth(.9f).fillMaxHeight(.92f).background(Glass).padding(25.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Tạm dừng · Trạng thái lưu", fontSize = 30.sp, fontWeight = FontWeight.Light)
                 Text(status, color = Soft, fontSize = 12.sp)
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    ConsoleButton("Resume", { paused = false; session.action("resume") }, primary = true)
-                    ConsoleButton("Save state", { session.action("save") })
-                    ConsoleButton("Load state", { session.action("load") })
+                    ConsoleButton("Tiếp tục", { paused = false; session.action("resume") }, primary = true)
+                    ConsoleButton(if (leaving) "Đang về trang chủ…" else "Thoát về trang chủ", {
+                        if (!leaving) {
+                            leaving = true
+                            if (statePrefs.getBoolean("autosave", false)) { save(0); Handler(Looper.getMainLooper()).postDelayed({ session.close() }, 500) } else session.close()
+                            requestExit()
+                        }
+                    }, enabled = !leaving)
                 }
-                ConsoleButton("Verify state round trip", { session.action("verify") })
-                ConsoleButton("Exit", { session.close() }, mark = Mark.Power)
+                Text("Ô lưu tách theo lõi và trò chơi · ô 0 dành cho tự lưu", color = Soft)
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    (1..4).forEach { slot ->
+                        val file = saveDir?.let { File(it,"slot-$slot.state") }
+                        Column(Modifier.weight(1f).background(Night).padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("Ô $slot")
+                            StationImage(saveDir?.let { File(it,"slot-$slot.png").path } ?: "", Modifier.fillMaxWidth().height(72.dp), "$status/$thumbRevision")
+                            Text(if (file?.exists() == true) SimpleDateFormat("dd/MM HH:mm:ss",Locale.getDefault()).format(Date(file.lastModified())) else "Chưa có trạng thái", color = Soft, fontSize = 11.sp)
+                            Row {
+                                TextButton({save(slot)},Modifier.weight(1f),contentPadding=PaddingValues(0.dp)) { Text("Lưu $slot",fontSize=12.sp) }
+                                TextButton({session.action("load:$slot")},Modifier.weight(1f),enabled=file?.exists()==true,contentPadding=PaddingValues(0.dp)) { Text("Tải $slot",fontSize=12.sp) }
+                                TextButton({session.action("delete:$slot");saveDir?.let {File(it,"slot-$slot.png").delete()}},Modifier.weight(1f),enabled=file?.exists()==true,contentPadding=PaddingValues(0.dp)) { Text("Xóa $slot",fontSize=12.sp) }
+                            }
+                        }
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) { Text("Tự lưu khi thoát (ô 0) · không đảm bảo nếu lõi bị treo", Modifier.weight(1f)); var auto by remember { mutableStateOf(statePrefs.getBoolean("autosave",false)) }; Switch(auto, { auto=it; statePrefs.edit().putBoolean("autosave",it).apply() }) }
+                ConsoleButton("Tải tự lưu (ô 0)", { session.action("load:0") }, enabled = saveDir?.let { File(it,"slot-0.state").exists() } == true)
             }
         }
     }
@@ -430,8 +499,11 @@ fun EmulationScreen(core: File, rom: File, exit: (String?) -> Unit) {
 
 @Composable
 private fun PadButton(label: String, id: Int) {
-    Box(Modifier.padding(3.dp).size(if (label.length > 4) 64.dp else 48.dp).background(Color(0x5565758A), CircleShape)
+    val prefs = androidx.compose.ui.platform.LocalContext.current.getSharedPreferences("controls",Context.MODE_PRIVATE)
+    val alpha = prefs.getFloat("opacity",.6f)
+    val size = prefs.getFloat("size",1f)
+    Box(Modifier.padding(3.dp).size(((if (label.length > 4) 64 else 48)*size).dp).background(Color(0xFF65758A).copy(alpha=alpha*.55f), CircleShape)
         .pointerInput(id) { detectTapGestures(onPress = { RetroInput.button(1, id, true); try { tryAwaitRelease() } finally { RetroInput.button(1, id, false) } }) }, contentAlignment = Alignment.Center) {
-        Text(label, color = Color.White.copy(alpha = .8f), fontSize = 10.sp)
+        Text(label, color = Color.White.copy(alpha = alpha), fontSize = if(label in listOf("△","○","×","□")) 26.sp else 10.sp)
     }
 }

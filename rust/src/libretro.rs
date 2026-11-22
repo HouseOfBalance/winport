@@ -821,6 +821,23 @@ impl Session {
             Ok(size)
         }
     }
+    pub fn select_slot(&mut self, slot: u64) -> Result<(), String> {
+        if slot > 4 {
+            return Err("Ô lưu phải từ 0 đến 4".into());
+        }
+        self.save_path = self
+            .save_path
+            .parent()
+            .ok_or("Thiếu thư mục lưu")?
+            .join(format!("slot-{slot}.state"));
+        Ok(())
+    }
+    pub fn delete_state(&self) -> Result<(), String> {
+        if self.save_path.exists() {
+            fs::remove_file(&self.save_path).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
     pub fn load_state(&self) -> Result<(), String> {
         let bytes =
             fs::read(&self.save_path).map_err(|e| format!("No readable save state: {e}"))?;

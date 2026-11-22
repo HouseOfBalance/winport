@@ -1,5 +1,6 @@
 pub mod components;
 pub mod containers;
+mod disc;
 pub mod jni;
 pub mod launch;
 pub mod library;
@@ -7,6 +8,8 @@ pub mod libretro;
 pub mod profiles;
 mod retro_hw;
 mod retro_jni;
+pub mod station;
+mod station_jni;
 pub mod storage;
 
 use components::{Component, Kind};

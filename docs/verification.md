@@ -1,5 +1,7 @@
 # Libretro Step 2 — GLES PSP / PS2 verification
 
+Current Step 3 UI, library and isolated-process Exit evidence: [step3-verification.md](step3-verification.md). The temporary UI and unresolved launcher-return limitation below are historical.
+
 Same Android 15 / API 35 x86_64 emulator as Step 1, 2400 × 1080 landscape. Renderer from SurfaceFlinger and the frontend's current EGL context:
 
 ```text

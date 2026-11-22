@@ -60,6 +60,11 @@ pub extern "system" fn Java_io_winport_app_RetroNative_command(
             return Ok("{}".into());
         }
         let s = session.as_mut().ok_or("No emulation session")?;
+        if matches!(action.as_str(), "save" | "load" | "delete") {
+            let value: serde_json::Value =
+                serde_json::from_str(&payload).map_err(|e| e.to_string())?;
+            s.select_slot(value["slot"].as_u64().unwrap_or(1))?;
+        }
         match action.as_str() {
             "run" => {
                 s.run_frame()?;
@@ -78,6 +83,10 @@ pub extern "system" fn Java_io_winport_app_RetroNative_command(
             "load" => {
                 s.load_state()?;
                 Ok("{\"loaded\":true}".into())
+            }
+            "delete" => {
+                s.delete_state()?;
+                Ok("{}".into())
             }
             "verify" => Ok(s.verify_state()?.to_string()),
             _ => Err("Unknown emulation command".into()),
